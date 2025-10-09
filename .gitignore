@@ -1,0 +1,67 @@
+# =========================
+# Xcode & Swift Projects
+# =========================
+
+# Build and derived data
+DerivedData/
+build/
+
+# User-specific settings
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+/.build/
+Packages/
+Package.pins
+Package.resolved
+.swiftpm/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Carthage
+Carthage/
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+# Archive files
+*.xcarchive
+
+# Temporary files
+*.moved-aside
+*.swp
+*.lock
+*.tmp
+*.DS_Store
+*.bak
+
+# Playground files
+timeline.xctimeline
+playground.xcworkspace
+
+# Mac system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+__MACOSX/
+
+# iCloud and backup
+*.icloud
+*.bak
+
+# Xcode previews cache
+*.swiftpm/xcode/
+.preview-thumbnails/
+
+# Logs
+*.log
