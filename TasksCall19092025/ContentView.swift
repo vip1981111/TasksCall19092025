@@ -27,7 +27,7 @@ enum TaskPriority: String, Codable, CaseIterable, Identifiable {
     
     var color: Color {
         switch self {
-        case .low: return .blue
+        case .low: return .green
         case .medium: return .orange
         case .high: return .red
         }
@@ -104,14 +104,12 @@ struct TaskItem: Identifiable, Hashable, Codable {
     var isDone: Bool
     var priority: TaskPriority
     
-    // تفاصيل إضافية
     var createdAt: Date
     var recurrence: TaskRecurrence
     var steps: [TaskStep]
     var notes: String
     var attachments: [TaskAttachment]
     
-    // تتبع “اليومي”
     var isInDaily: Bool
     var addedToDailyAt: Date?
     
@@ -142,11 +140,10 @@ struct TaskItem: Identifiable, Hashable, Codable {
     }
 }
 
-// صفحة/قائمة مهام مستقلة
 struct TaskPage: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
-    var isDaily: Bool // صفحة “اليومي” ثابتة كعرض فقط
+    var isDaily: Bool
     var tasks: [TaskItem]
     
     init(id: UUID = UUID(), name: String, isDaily: Bool = false, tasks: [TaskItem] = []) {
@@ -165,14 +162,12 @@ final class TasksStore: ObservableObject {
         didSet { save() }
     }
     
-    // Settings stored in UserDefaults (lightweight)
     @Published var notificationsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
             if notificationsEnabled {
                 requestNotificationAuthorizationIfNeeded()
             } else {
-                // عند الإيقاف يمكن إزالة المجدول العام (لا نحذف تذكيرات اليومي الفردية تلقائيًا)
                 cancelScheduledDailyAtTime()
             }
         }
@@ -198,12 +193,10 @@ final class TasksStore: ObservableObject {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         self.fileURL = docs.appendingPathComponent(filename)
         
-        // Load settings defaults
         self.notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         if let ts = UserDefaults.standard.object(forKey: "dailyReminderTime") as? Double {
             self.dailyReminderTime = Date(timeIntervalSince1970: ts)
         } else {
-            // Default 9:00 AM today
             var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
             comps.hour = 9; comps.minute = 0
             self.dailyReminderTime = Calendar.current.date(from: comps) ?? Date()
@@ -212,7 +205,6 @@ final class TasksStore: ObservableObject {
         
         load()
         
-        // Ensure a scheduled daily reminder exists if enabled
         if notificationsEnabled {
             requestNotificationAuthorizationIfNeeded()
             scheduleDailyReminder(at: dailyReminderTime)
@@ -223,193 +215,125 @@ final class TasksStore: ObservableObject {
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
-            if decoded.isEmpty {
-                self.pages = Self.defaultPages()
-            } else {
-                self.pages = decoded
-            }
+            self.pages = decoded.isEmpty ? Self.defaultPages() : decoded
         } catch {
             self.pages = Self.defaultPages()
             save()
         }
     }
-    
     func save() {
         do {
             let data = try JSONEncoder().encode(pages)
             try data.write(to: fileURL, options: [.atomic])
-        } catch {
-            // TODO: سجل الخطأ أو اعرض تنبيهًا للمستخدم
-        }
+        } catch { }
     }
     
     static func defaultPages() -> [TaskPage] {
         [
-            TaskPage(
-                name: "اليومي",
-                isDaily: true,
-                tasks: [] // اليومي للعرض فقط
-            ),
-            TaskPage(
-                name: "عام",
-                isDaily: false,
-                tasks: [
-                    TaskItem(title: "كتابة تقرير", isDone: true, priority: .high)
-                ]
-            ),
-            TaskPage(
-                name: "خاص",
-                isDaily: false,
-                tasks: [
-                    TaskItem(title: "قراءة البريد", priority: .low),
-                    TaskItem(title: "مراجعة المهام", priority: .medium)
-                ]
-            )
+            TaskPage(name: "اليومي", isDaily: true, tasks: []),
+            TaskPage(name: "عام", tasks: [ TaskItem(title: "كتابة تقرير", isDone: true, priority: .high) ]),
+            TaskPage(name: "خاص", tasks: [
+                TaskItem(title: "قراءة البريد", priority: .low),
+                TaskItem(title: "مراجعة المهام", priority: .medium)
+            ])
         ]
     }
     
-    // MARK: - Page operations
-    
+    // Pages
     func addPage(named name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        withAnimation {
-            pages.append(TaskPage(name: trimmed))
-        }
+        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        withAnimation { pages.append(TaskPage(name: t)) }
     }
-    
     func renamePage(id: UUID, to newName: String) {
-        guard let idx = pages.firstIndex(where: { $0.id == id }) else { return }
-        guard !pages[idx].isDaily else { return }
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        withAnimation {
-            pages[idx].name = trimmed
-        }
+        guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
+        let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        withAnimation { pages[i].name = t }
     }
-    
     func deletePage(id: UUID) {
-        guard let idx = pages.firstIndex(where: { $0.id == id }) else { return }
-        guard !pages[idx].isDaily else { return } // لا تحذف اليومي
-        withAnimation {
-            pages.remove(at: idx)
-        }
+        guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
+        withAnimation { pages.remove(at: i) }
     }
     
-    // MARK: - Task operations within page
-    
+    // Tasks
     func addTask(in pageID: UUID, title: String, priority: TaskPriority = .medium) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        withAnimation {
-            pages[idx].tasks.insert(TaskItem(title: trimmed, priority: priority), at: 0)
-        }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        withAnimation { pages[i].tasks.insert(TaskItem(title: t, priority: priority), at: 0) }
     }
-    
     func deleteTask(in pageID: UUID, id: UUID) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
-        withAnimation {
-            pages[idx].tasks.removeAll { $0.id == id }
-        }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        withAnimation { pages[i].tasks.removeAll { $0.id == id } }
         cancelDailyNotification(taskID: id)
     }
-    
     func deleteTasks(in pageID: UUID, ids: Set<UUID>) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
-        withAnimation {
-            pages[idx].tasks.removeAll { ids.contains($0.id) }
-        }
-        for id in ids { cancelDailyNotification(taskID: id) }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        withAnimation { pages[i].tasks.removeAll { ids.contains($0.id) } }
+        ids.forEach { cancelDailyNotification(taskID: $0) }
     }
-    
     func markTasks(in pageID: UUID, ids: Set<UUID>, done: Bool) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         withAnimation {
-            for i in pages[idx].tasks.indices {
-                if ids.contains(pages[idx].tasks[i].id) {
-                    pages[idx].tasks[i].isDone = done
-                    if done {
-                        for j in pages[idx].tasks[i].steps.indices {
-                            pages[idx].tasks[i].steps[j].isDone = true
-                            pages[idx].tasks[i].steps[j].completedAt = pages[idx].tasks[i].steps[j].completedAt ?? Date()
-                        }
+            for j in pages[i].tasks.indices where ids.contains(pages[i].tasks[j].id) {
+                pages[i].tasks[j].isDone = done
+                if done {
+                    for k in pages[i].tasks[j].steps.indices {
+                        pages[i].tasks[j].steps[k].isDone = true
+                        pages[i].tasks[j].steps[k].completedAt = pages[i].tasks[j].steps[k].completedAt ?? Date()
                     }
                 }
             }
         }
     }
-    
     func setPriority(in pageID: UUID, ids: Set<UUID>, priority: TaskPriority) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         withAnimation {
-            for i in pages[idx].tasks.indices {
-                if ids.contains(pages[idx].tasks[i].id) {
-                    pages[idx].tasks[i].priority = priority
-                }
+            for j in pages[i].tasks.indices where ids.contains(pages[i].tasks[j].id) {
+                pages[i].tasks[j].priority = priority
             }
         }
     }
-    
     func moveTasks(in pageID: UUID, from source: IndexSet, to destination: Int) {
-        guard let idx = pages.firstIndex(where: { $0.id == pageID }) else { return }
-        withAnimation {
-            pages[idx].tasks.move(fromOffsets: source, toOffset: destination)
-        }
+        guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        withAnimation { pages[i].tasks.move(fromOffsets: source, toOffset: destination) }
     }
-    
     func moveTask(_ taskID: UUID, from sourcePageID: UUID, to targetPageID: UUID) {
-        guard let sIdx = pages.firstIndex(where: { $0.id == sourcePageID }),
-              let tIdx = pages.firstIndex(where: { $0.id == targetPageID }),
-              let taskIndex = pages[sIdx].tasks.firstIndex(where: { $0.id == taskID }) else { return }
-        let task = pages[sIdx].tasks[taskIndex]
+        guard let s = pages.firstIndex(where: { $0.id == sourcePageID }),
+              let t = pages.firstIndex(where: { $0.id == targetPageID }),
+              let idx = pages[s].tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        let task = pages[s].tasks[idx]
         withAnimation {
-            pages[sIdx].tasks.remove(at: taskIndex)
-            pages[tIdx].tasks.insert(task, at: 0)
+            pages[s].tasks.remove(at: idx)
+            pages[t].tasks.insert(task, at: 0)
         }
     }
+    var dailyPageID: UUID? { pages.first(where: { $0.isDaily })?.id }
     
-    var dailyPageID: UUID? {
-        pages.first(where: { $0.isDaily })?.id
-    }
-    
-    // MARK: - Daily management
-    
+    // Daily
     func setTaskInDaily(taskID: UUID, in pageID: UUID, to inDaily: Bool) {
-        guard let pIdx = pages.firstIndex(where: { $0.id == pageID }),
-              let tIdx = pages[pIdx].tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        guard let p = pages.firstIndex(where: { $0.id == pageID }),
+              let t = pages[p].tasks.firstIndex(where: { $0.id == taskID }) else { return }
         withAnimation {
-            pages[pIdx].tasks[tIdx].isInDaily = inDaily
-            pages[pIdx].tasks[tIdx].addedToDailyAt = inDaily ? Date() : nil
+            pages[p].tasks[t].isInDaily = inDaily
+            pages[p].tasks[t].addedToDailyAt = inDaily ? Date() : nil
         }
-        if inDaily {
-            scheduleDailyReminder(for: pages[pIdx].tasks[tIdx])
-        } else {
-            cancelDailyNotification(taskID: taskID)
-        }
+        if inDaily { scheduleDailyReminder(for: pages[p].tasks[t]) }
+        else { cancelDailyNotification(taskID: taskID) }
     }
-    
     func allDailyBindings(from pagesBinding: Binding<[TaskPage]>) -> [Binding<TaskItem>] {
         var result: [Binding<TaskItem>] = []
-        for pIndex in pagesBinding.wrappedValue.indices {
-            if pagesBinding[pIndex].isDaily.wrappedValue {
-                continue
-            }
-            for tIndex in pagesBinding[pIndex].tasks.wrappedValue.indices {
-                if pagesBinding[pIndex].tasks[tIndex].isInDaily.wrappedValue {
-                    result.append(pagesBinding[pIndex].tasks[tIndex])
-                }
+        for p in pagesBinding.wrappedValue.indices where !pagesBinding[p].isDaily.wrappedValue {
+            for t in pagesBinding[p].tasks.wrappedValue.indices where pagesBinding[p].tasks[t].isInDaily.wrappedValue {
+                result.append(pagesBinding[p].tasks[t])
             }
         }
         return result
     }
     
-    // MARK: - Local Notifications
-    
-    private func notificationIdentifier(for taskID: UUID) -> String {
-        "daily-\(taskID.uuidString)"
-    }
-    
+    // Notifications
+    private func notificationIdentifier(for taskID: UUID) -> String { "daily-\(taskID.uuidString)" }
     func requestNotificationAuthorizationIfNeeded() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             if settings.authorizationStatus == .notDetermined {
@@ -417,90 +341,64 @@ final class TasksStore: ObservableObject {
             }
         }
     }
-    
-    // Existing per-task 24h reminder
     func scheduleDailyReminder(for task: TaskItem) {
         guard notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = "متابعة مهمة في اليومي"
         content.body = "هل لازالت المهمة \"\(task.title)\" بحاجة للبقاء في اليومي؟"
         content.sound = .default
-        
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 24 * 60 * 60, repeats: false)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 24*60*60, repeats: false)
         let request = UNNotificationRequest(identifier: notificationIdentifier(for: task.id), content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request) { _ in }
     }
-    
     func cancelDailyNotification(taskID: UUID) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationIdentifier(for: taskID)])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [notificationIdentifier(for: taskID)])
     }
-    
-    // New: schedule a fixed-time daily reminder (general)
     func scheduleDailyReminder(at time: Date) {
         guard notificationsEnabled else { return }
-        
         let comps = Calendar.current.dateComponents([.hour, .minute], from: time)
-        var dateComponents = DateComponents()
-        dateComponents.hour = comps.hour
-        dateComponents.minute = comps.minute
-        
+        var dc = DateComponents(); dc.hour = comps.hour; dc.minute = comps.minute
         let content = UNMutableNotificationContent()
         content.title = "تذكير يومي"
         content.body = "راجع مهامك اليومية وحدّث قائمتك."
         content.sound = .default
-        
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        let request = UNNotificationRequest(identifier: scheduledDailyAtIdentifier, content: content, trigger: trigger)
-        
-        // Remove previous then add
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: true)
         cancelScheduledDailyAtTime()
-        UNUserNotificationCenter.current().add(request) { _ in }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "daily-fixed-time-reminder", content: content, trigger: trigger)) { _ in }
     }
-    
     func cancelScheduledDailyAtTime() {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [scheduledDailyAtIdentifier])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [scheduledDailyAtIdentifier])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["daily-fixed-time-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["daily-fixed-time-reminder"])
     }
-    
     func scheduleTestNotification() {
         guard notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = "اختبار الإشعار"
         content.body = "هذا إشعار تجريبي للتأكد من صلاحيات الإشعارات."
         content.sound = .default
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.0, repeats: false)
-        let request = UNNotificationRequest(identifier: "test-\(UUID().uuidString)", content: content, trigger: trigger)
-        UNUserNotificationCenter.current().add(request) { _ in }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "test-\(UUID().uuidString)", content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))) { _ in }
     }
     
-    // MARK: - Export / Import
-    
+    // Export / Import
     func exportData() -> URL? {
         do {
             let data = try JSONEncoder().encode(pages)
-            let tmp = FileManager.default.temporaryDirectory
-            let url = tmp.appendingPathComponent("TasksExport-\(UUID().uuidString).json")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("TasksExport-\(UUID().uuidString).json")
             try data.write(to: url, options: .atomic)
             return url
-        } catch {
-            return nil
-        }
+        } catch { return nil }
     }
-    
     func importData(from url: URL) throws {
         let data = try Data(contentsOf: url)
         let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
         self.pages = decoded
     }
     
-    // MARK: - Attachments
-    
+    // Attachments
     func removeAttachmentFile(at url: URL) {
         let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) {
-            try? fm.removeItem(at: url)
-        }
+        if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
     }
 }
 
@@ -514,56 +412,41 @@ enum TasksFilter: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    // تم التعديل: استخدام EnvironmentObject بدل StateObject
     @EnvironmentObject private var store: TasksStore
     
-    // اختيار الصفحة الحالية
     @State private var selectedPageID: UUID? = nil
     
-    // إضافة/إدارة المهام
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
     @State private var searchText: String = ""
     
-    // فلاتر وأولوية
     @State private var filter: TasksFilter = .all
     @State private var defaultPriorityForNewTask: TaskPriority = .medium
     @State private var sortByPriority: Bool = true
     
-    // إدارة الصفحات
     @State private var isAddingPage: Bool = false
     @State private var newPageName: String = ""
     @State private var renamingPage: TaskPage? = nil
     @State private var renameText: String = ""
     
-    // إعدادات
     @State private var isShowingSettings: Bool = false
-    @State private var showImportPicker: Bool = false
-    @State private var importErrorAlert: Bool = false
     
-    // Helper: الصفحة الحالية
     private var currentPage: TaskPage? {
         guard let id = selectedPageID else {
             return store.pages.first(where: { $0.isDaily }) ?? store.pages.first
         }
         return store.pages.first(where: { $0.id == id })
     }
-    
     private var currentPageIndex: Int? {
         guard let page = currentPage,
               let idx = store.pages.firstIndex(of: page) else { return nil }
         return idx
     }
     
-    // Bindings لمهام الصفحة الحالية مع الفلاتر
     private var filteredBindings: [Binding<TaskItem>] {
-        if let page = currentPage, page.isDaily {
-            return dailyFilteredBindings()
-        } else {
-            return pageFilteredBindings()
-        }
+        if let page = currentPage, page.isDaily { return dailyFilteredBindings() }
+        return pageFilteredBindings()
     }
-    
     private func dailyFilteredBindings() -> [Binding<TaskItem>] {
         var items: [Binding<TaskItem>] = store.allDailyBindings(from: $store.pages)
         items = applyFilter(filter, to: items)
@@ -571,7 +454,6 @@ struct ContentView: View {
         items = sortBindingsIfNeeded(items, sortByPriority: sortByPriority)
         return items
     }
-    
     private func pageFilteredBindings() -> [Binding<TaskItem>] {
         guard let idx = currentPageIndex else { return [] }
         var items: [Binding<TaskItem>] = Array($store.pages[idx].tasks)
@@ -580,46 +462,33 @@ struct ContentView: View {
         items = sortBindingsIfNeeded(items, sortByPriority: sortByPriority)
         return items
     }
-    
     private func applyFilter(_ filter: TasksFilter, to items: [Binding<TaskItem>]) -> [Binding<TaskItem>] {
         switch filter {
-        case .all:
-            return items
-        case .active:
-            return items.filter { !$0.wrappedValue.isDone }
-        case .done:
-            return items.filter { $0.wrappedValue.isDone }
+        case .all: return items
+        case .active: return items.filter { !$0.wrappedValue.isDone }
+        case .done: return items.filter { $0.wrappedValue.isDone }
         }
     }
-    
     private func applySearch(_ query: String, to items: [Binding<TaskItem>]) -> [Binding<TaskItem>] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return items }
         return items.filter { $0.wrappedValue.title.lowercased().contains(q) }
     }
-    
     private func sortBindingsIfNeeded(_ items: [Binding<TaskItem>], sortByPriority: Bool) -> [Binding<TaskItem>] {
         guard sortByPriority else { return items }
         return items.sorted { a, b in
             let lhs = a.wrappedValue
             let rhs = b.wrappedValue
-            if lhs.isDone != rhs.isDone {
-                return rhs.isDone
-            }
+            if lhs.isDone != rhs.isDone { return rhs.isDone }
             if lhs.priority.sortWeight != rhs.priority.sortWeight {
                 return lhs.priority.sortWeight < rhs.priority.sortWeight
             }
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
     }
-    
     private var remainingCount: Int {
         if let page = currentPage, page.isDaily {
-            return store.pages
-                .filter { !$0.isDaily }
-                .flatMap { $0.tasks }
-                .filter { $0.isInDaily && !$0.isDone }
-                .count
+            return store.pages.filter { !$0.isDaily }.flatMap { $0.tasks }.filter { $0.isInDaily && !$0.isDone }.count
         }
         guard let page = currentPage else { return 0 }
         return page.tasks.filter { !$0.isDone }.count
@@ -628,18 +497,10 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 8) {
-                pagesHeader
-                
-                filtersToolbar
-                
-                if currentPage?.isDaily == true {
-                    Text("أضف المهام إلى اليومي من صفحاتها أو من تفاصيل المهمة.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                } else {
-                    addTaskBar
-                }
+                headerArea
+                chipsPagesBar
+                chipsFiltersBar
+                quickAddBarIfNeeded
                 
                 if filteredBindings.isEmpty {
                     ContentUnavailableView(
@@ -656,75 +517,52 @@ struct ContentView: View {
                                     toggleDailyForTaskBinding($task, to: newValue)
                                 })
                             } label: {
-                                TaskRowView(
-                                    task: $task
-                                )
+                                TaskCardRow(task: $task)
                             }
                             .swipeActions(edge: .trailing) {
-                                if currentPage?.isDaily != true {
-                                    if let pageID = pageIDForTask(task.id) {
-                                        Button(role: .destructive) {
-                                            store.deleteTask(in: pageID, id: task.id)
-                                        } label: {
-                                            Label("حذف", systemImage: "trash")
-                                        }
-                                    }
+                                if currentPage?.isDaily != true, let pageID = pageIDForTask(task.id) {
+                                    Button(role: .destructive) {
+                                        store.deleteTask(in: pageID, id: task.id)
+                                    } label: { Label("حذف", systemImage: "trash") }
                                 }
                             }
                             .swipeActions(edge: .leading, allowsFullSwipe: false) {
                                 if let pageID = pageIDForTask(task.id) {
                                     if !task.isInDaily {
-                                        Button {
-                                            store.setTaskInDaily(taskID: task.id, in: pageID, to: true)
-                                        } label: {
+                                        Button { store.setTaskInDaily(taskID: task.id, in: pageID, to: true) } label: {
                                             Label("إلى اليومي", systemImage: "sun.max")
-                                        }
-                                        .tint(.yellow)
+                                        }.tint(.yellow)
                                     } else {
-                                        Button {
-                                            store.setTaskInDaily(taskID: task.id, in: pageID, to: false)
-                                        } label: {
+                                        Button { store.setTaskInDaily(taskID: task.id, in: pageID, to: false) } label: {
                                             Label("إزالة من اليومي", systemImage: "sun.min")
-                                        }
-                                        .tint(.orange)
+                                        }.tint(.orange)
                                     }
                                 }
                             }
                             .contextMenu {
                                 Menu("الأولوية") {
                                     ForEach(TaskPriority.allCases) { p in
-                                        Button {
-                                            task.priority = p
-                                        } label: {
-                                            Label(p.title, systemImage: "circle.fill")
-                                                .foregroundStyle(p.color)
+                                        Button { task.priority = p } label: {
+                                            Label(p.title, systemImage: "circle.fill").foregroundStyle(p.color)
                                         }
                                     }
                                 }
-                                
                                 if let pageID = pageIDForTask(task.id) {
                                     Button(task.isInDaily ? "إزالة من اليومي" : "إضافة إلى اليومي") {
                                         store.setTaskInDaily(taskID: task.id, in: pageID, to: !task.isInDaily)
                                     }
                                 }
-                                
                                 if let srcPageID = pageIDForTask(task.id) {
                                     Menu("نقل إلى صفحة") {
                                         ForEach(store.pages) { page in
                                             if !page.isDaily, page.id != srcPageID {
-                                                Button(page.name) {
-                                                    store.moveTask(task.id, from: srcPageID, to: page.id)
-                                                }
+                                                Button(page.name) { store.moveTask(task.id, from: srcPageID, to: page.id) }
                                             }
                                         }
                                     }
                                 }
-                                
-                                if let pageID = pageIDForTask(task.id) {
-                                    Button(task.isDone ? "وضع غير منجز" : "وضع منجز") {
-                                        task.isDone.toggle()
-                                        syncStepsWithTask(&task)
-                                    }
+                                Button(task.isDone ? "وضع غير منجز" : "وضع منجز") {
+                                    task.isDone.toggle(); syncStepsWithTask(&task)
                                 }
                             }
                         }
@@ -734,112 +572,77 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .listStyle(.plain)
+                    .padding(.top, 4)
                     .searchable(text: $searchText, placement: .automatic, prompt: "ابحث في المهام")
                 }
             }
-            .navigationTitle(navigationTitleText)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    EditButton()
-                        .disabled(currentPage?.isDaily == true)
-                }
-                
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isShowingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                    Button { isShowingSettings = true } label: {
+                        Image(systemName: "gearshape").font(.title3)
                     }
                     .accessibilityLabel("الإعدادات")
                 }
-                
+                ToolbarItem(placement: .topBarTrailing) {
+                    EditButton().disabled(currentPage?.isDaily == true)
+                }
                 ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("تم") { isTextFieldFocused = false }
+                    Spacer(); Button("تم") { isTextFieldFocused = false }
                 }
             }
-            .sheet(isPresented: $isShowingSettings) {
-                SettingsView(store: store)
-            }
+            .sheet(isPresented: $isShowingSettings) { SettingsView(store: store) }
             .onAppear {
-                if selectedPageID == nil {
-                    selectedPageID = store.dailyPageID ?? store.pages.first?.id
-                }
+                if selectedPageID == nil { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
                 store.requestNotificationAuthorizationIfNeeded()
             }
+            .navigationTitle(navigationTitleText)
         }
     }
     
-    // MARK: - Helpers
+    // MARK: - Header & Chips
     
-    private func createdAtText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ar")
-        formatter.dateFormat = "EEEE، d MMM yyyy - h:mm a"
-        return formatter.string(from: date)
-    }
-    
-    private func syncStepsWithTask(_ task: inout TaskItem) {
-        if task.isDone {
-            for i in task.steps.indices {
-                task.steps[i].isDone = true
-                task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+    private var headerArea: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(navigationTitleText)
+                .font(.system(size: 28, weight: .bold))
+                .padding(.horizontal)
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("ابحث في المهام", text: $searchText)
+                    .textInputAutocapitalization(.never)
             }
-        } else {
-            // لا نُجبر الخطوات على غير منجزة عند إلغاء إنجاز المهمة
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(Capsule())
+            .padding(.horizontal)
         }
+        .padding(.top, 6)
     }
     
-    private func pageIDForTask(_ taskID: UUID) -> UUID? {
-        for page in store.pages where !page.isDaily {
-            if page.tasks.contains(where: { $0.id == taskID }) {
-                return page.id
-            }
-        }
-        return nil
-    }
-    
-    private func toggleDailyForTaskBinding(_ taskBinding: Binding<TaskItem>, to newValue: Bool) {
-        let task = taskBinding.wrappedValue
-        if let pageID = pageIDForTask(task.id) {
-            store.setTaskInDaily(taskID: task.id, in: pageID, to: newValue)
-        } else {
-            taskBinding.isInDaily.wrappedValue = newValue
-            taskBinding.addedToDailyAt.wrappedValue = newValue ? Date() : nil
-            if newValue {
-                store.scheduleDailyReminder(for: taskBinding.wrappedValue)
-            } else {
-                store.cancelDailyNotification(taskID: taskBinding.wrappedValue.id)
-            }
-        }
-    }
-    
-    // MARK: - Subviews
-    
-    private var pagesHeader: some View {
+    private var chipsPagesBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                if let daily = store.pages.first(where: { $0.isDaily }) {
+                    pageChip(for: daily)
+                }
+                ForEach(store.pages.filter { !$0.isDaily }) { page in
+                    pageChip(for: page)
+                }
                 Button {
                     isAddingPage = true
                 } label: {
-                    Image(systemName: "plus.circle.fill")
+                    Label("إضافة", systemImage: "plus.circle.fill")
+                        .labelStyle(.iconOnly)
                         .font(.title3)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.accentColor)
                 .accessibilityLabel("إضافة صفحة جديدة")
-                
-                if let daily = store.pages.first(where: { $0.isDaily }) {
-                    pageButton(for: daily)
-                }
-                
-                ForEach(store.pages.filter { !$0.isDaily }) { page in
-                    pageButton(for: page)
-                }
             }
             .padding(.horizontal)
-            .padding(.top, 8)
         }
         .sheet(isPresented: $isAddingPage) {
             NavigationStack {
@@ -852,9 +655,7 @@ struct ContentView: View {
                 }
                 .navigationTitle("صفحة جديدة")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("إلغاء") { isAddingPage = false }
-                    }
+                    ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { isAddingPage = false } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("إضافة") { addPage() }
                             .disabled(newPageName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -873,9 +674,7 @@ struct ContentView: View {
                 }
                 .navigationTitle("إعادة تسمية")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("إلغاء") { renamingPage = nil }
-                    }
+                    ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { renamingPage = nil } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("حفظ") { renamePage(id: page.id) }
                             .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -886,91 +685,101 @@ struct ContentView: View {
     }
     
     @ViewBuilder
-    private func pageButton(for page: TaskPage) -> some View {
+    private func pageChip(for page: TaskPage) -> some View {
         let isSelected = page.id == selectedPageID
         Button {
             selectedPageID = page.id
             searchText = ""
         } label: {
             HStack(spacing: 6) {
-                if page.isDaily {
-                    Image(systemName: "sun.max.fill")
-                        .foregroundStyle(.yellow)
-                }
+                if page.isDaily { Image(systemName: "sun.max.fill").foregroundStyle(.yellow) }
                 Text(page.isDaily ? "اليومي" : page.name)
-                    .fontWeight(isSelected ? .semibold : .regular)
+                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(isSelected ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
+            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
             .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
             .clipShape(Capsule())
         }
         .contextMenu {
             if !page.isDaily {
-                Button("إعادة تسمية") {
-                    renamingPage = page
-                    renameText = page.name
-                }
+                Button("إعادة تسمية") { renamingPage = page; renameText = page.name }
                 Button("حذف الصفحة", role: .destructive) {
                     store.deletePage(id: page.id)
-                    if selectedPageID == page.id {
-                        selectedPageID = store.dailyPageID ?? store.pages.first?.id
-                    }
+                    if selectedPageID == page.id { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
                 }
             }
         }
     }
     
-    private var filtersToolbar: some View {
-        HStack(spacing: 8) {
-            Picker("فلتر", selection: $filter) {
+    private var chipsFiltersBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
                 ForEach(TasksFilter.allCases) { f in
-                    Text(f.rawValue).tag(f)
-                }
-            }
-            .pickerStyle(.segmented)
-            
-            Toggle("ترتيب بالأولوية", isOn: $sortByPriority)
-                .toggleStyle(.switch)
-                .font(.footnote)
-        }
-        .padding(.horizontal)
-    }
-    
-    private var addTaskBar: some View {
-        HStack {
-            Menu {
-                Picker("الأولوية الافتراضية", selection: $defaultPriorityForNewTask) {
-                    ForEach(TaskPriority.allCases) { p in
-                        Label(p.title, systemImage: "circle.fill")
-                            .foregroundStyle(p.color)
-                            .tag(p)
+                    Button {
+                        filter = f
+                    } label: {
+                        Text(f.rawValue)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(filter == f ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.12))
+                            .foregroundStyle(filter == f ? Color.white : Color.primary)
+                            .clipShape(Capsule())
                     }
                 }
-            } label: {
-                Circle()
-                    .fill(defaultPriorityForNewTask.color)
-                    .frame(width: 14, height: 14)
-                    .overlay(Circle().stroke(.quaternary, lineWidth: 1))
-                    .padding(.leading, 8)
-                    .accessibilityLabel("أولوية للمهمة الجديدة")
+                HStack(spacing: 8) {
+                    Text("ترتيب بالأولوية")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Toggle("", isOn: $sortByPriority).labelsHidden()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
             }
-            
-            TextField("أضف مهمة جديدة...", text: $newTaskTitle)
-                .textFieldStyle(.roundedBorder)
-                .submitLabel(.done)
-                .focused($isTextFieldFocused)
-                .onSubmit(addTask)
-            
-            Button(action: addTask) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 24, weight: .semibold))
-            }
-            .disabled(newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || currentPage == nil || currentPage?.isDaily == true)
-            .accessibilityLabel("إضافة مهمة")
+            .padding(.horizontal)
         }
-        .padding(.horizontal)
+    }
+    
+    private var quickAddBarIfNeeded: some View {
+        Group {
+            if currentPage?.isDaily == true {
+                Text("أضف المهام إلى اليومي من صفحاتها أو من تفاصيل المهمة.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                HStack(spacing: 10) {
+                    Menu {
+                        Picker("الأولوية الافتراضية", selection: $defaultPriorityForNewTask) {
+                            ForEach(TaskPriority.allCases) { p in
+                                Label(p.title, systemImage: "circle.fill").foregroundStyle(p.color).tag(p)
+                            }
+                        }
+                    } label: {
+                        Circle().fill(defaultPriorityForNewTask.color).frame(width: 14, height: 14)
+                            .overlay(Circle().stroke(.quaternary, lineWidth: 1))
+                            .padding(.leading, 6)
+                            .accessibilityLabel("أولوية للمهمة الجديدة")
+                    }
+                    TextField("أضف مهمة جديدة...", text: $newTaskTitle)
+                        .submitLabel(.done)
+                        .focused($isTextFieldFocused)
+                        .onSubmit(addTask)
+                    Button(action: addTask) {
+                        Image(systemName: "plus.circle.fill").font(.system(size: 24, weight: .semibold))
+                    }
+                    .disabled(newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || currentPage == nil || currentPage?.isDaily == true)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(Capsule())
+                .padding(.horizontal)
+            }
+        }
     }
     
     private var navigationTitleText: String {
@@ -986,82 +795,23 @@ struct ContentView: View {
         let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         store.addTask(in: pageID, title: title, priority: defaultPriorityForNewTask)
-        newTaskTitle = ""
-        isTextFieldFocused = false
+        newTaskTitle = ""; isTextFieldFocused = false
     }
-    
     private func addPage() {
         let name = newPageName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         store.addPage(named: name)
-        if let newID = store.pages.last?.id {
-            selectedPageID = newID
-        }
-        newPageName = ""
-        isAddingPage = false
+        if let newID = store.pages.last?.id { selectedPageID = newID }
+        newPageName = ""; isAddingPage = false
     }
-    
     private func renamePage(id: UUID) {
         let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         store.renamePage(id: id, to: name)
         renamingPage = nil
     }
-}
-
-// MARK: - Task Row
-
-private struct TaskRowView: View {
-    @Binding var task: TaskItem
     
-    var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                task.isDone.toggle()
-                syncStepsWithTask()
-            } label: {
-                Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(task.isDone ? .green : .secondary)
-                    .font(.system(size: 22))
-                    .padding(.vertical, 6)
-                    .padding(.trailing, 2)
-            }
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
-            
-            Circle()
-                .fill(task.priority.color)
-                .frame(width: 10, height: 10)
-                .overlay(Circle().stroke(.quaternary, lineWidth: 1))
-            
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(task.title)
-                        .lineLimit(1)
-                        .strikethrough(task.isDone, color: .secondary)
-                        .foregroundStyle(task.isDone ? .secondary : .primary)
-                    if task.isInDaily {
-                        Image(systemName: "sun.max.fill")
-                            .foregroundStyle(.yellow)
-                            .imageScale(.small)
-                    }
-                }
-                
-                if !task.steps.isEmpty {
-                    let doneCount = task.steps.filter { $0.isDone }.count
-                    let total = task.steps.count
-                    ProgressView(value: Double(doneCount), total: Double(total))
-                        .tint(task.priority.color)
-                        .scaleEffect(x: 1, y: 0.6, anchor: .center)
-                }
-                
-                Text(createdAtText(task.createdAt))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .contentShape(Rectangle())
-    }
+    // MARK: - Helpers
     
     private func createdAtText(_ date: Date) -> String {
         let formatter = DateFormatter()
@@ -1069,8 +819,7 @@ private struct TaskRowView: View {
         formatter.dateFormat = "EEEE، d MMM yyyy - h:mm a"
         return formatter.string(from: date)
     }
-    
-    private func syncStepsWithTask() {
+    private func syncStepsWithTask(_ task: inout TaskItem) {
         if task.isDone {
             for i in task.steps.indices {
                 task.steps[i].isDone = true
@@ -1078,9 +827,122 @@ private struct TaskRowView: View {
             }
         }
     }
+    private func pageIDForTask(_ taskID: UUID) -> UUID? {
+        for page in store.pages where !page.isDaily {
+            if page.tasks.contains(where: { $0.id == taskID }) { return page.id }
+        }
+        return nil
+    }
+    private func toggleDailyForTaskBinding(_ taskBinding: Binding<TaskItem>, to newValue: Bool) {
+        let task = taskBinding.wrappedValue
+        if let pageID = pageIDForTask(task.id) {
+            store.setTaskInDaily(taskID: task.id, in: pageID, to: newValue)
+        } else {
+            taskBinding.isInDaily.wrappedValue = newValue
+            taskBinding.addedToDailyAt.wrappedValue = newValue ? Date() : nil
+            if newValue { store.scheduleDailyReminder(for: taskBinding.wrappedValue) }
+            else { store.cancelDailyNotification(taskID: taskBinding.wrappedValue.id) }
+        }
+    }
 }
 
-// MARK: - Task Detail View
+// MARK: - Task Card Row (تصميم بطاقة مطابق للصورة)
+
+private struct TaskCardRow: View {
+    @Binding var task: TaskItem
+    
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            // زر إنجاز
+            Button {
+                task.isDone.toggle()
+                if task.isDone {
+                    for i in task.steps.indices {
+                        task.steps[i].isDone = true
+                        task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+                    }
+                }
+            } label: {
+                Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(task.isDone ? .green : .secondary)
+                    .font(.system(size: 22))
+            }
+            .buttonStyle(.plain)
+            
+            // بادج أولوية
+            Text(task.priority.title)
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(task.priority.color)
+                .clipShape(Capsule())
+            
+            // عنوان + أيقونات صغيرة + تاريخ
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    if task.isInDaily {
+                        Image(systemName: "sun.max.fill")
+                            .foregroundStyle(.yellow)
+                            .imageScale(.small)
+                    }
+                    Text(task.title)
+                        .lineLimit(1)
+                        .strikethrough(task.isDone, color: .secondary)
+                        .foregroundStyle(task.isDone ? .secondary : .primary)
+                }
+                
+                HStack(spacing: 10) {
+                    // خطوات
+                    if !task.steps.isEmpty {
+                        let done = task.steps.filter { $0.isDone }.count
+                        let total = task.steps.count
+                        Label("\(done)/\(total)", systemImage: "checklist")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // مرفقات
+                    if !task.attachments.isEmpty {
+                        Label("\(task.attachments.count)", systemImage: "paperclip")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // ملاحظات
+                    if !task.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Image(systemName: "square.and.pencil")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Text(createdAtString(task.createdAt))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            
+            // نقطة حالة يمين
+            Circle()
+                .fill(task.isDone ? Color.green : task.priority.color)
+                .frame(width: 12, height: 12)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+        )
+        .contentShape(Rectangle())
+    }
+    
+    private func createdAtString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ar")
+        f.dateFormat = "EEEE، d MMM yyyy - h:mm a"
+        return f.string(from: date)
+    }
+}
+
+// MARK: - Task Detail View (بدون تغيير كبير)
 
 struct TaskDetailView: View {
     @Binding var task: TaskItem
@@ -1096,39 +958,33 @@ struct TaskDetailView: View {
             VStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Image(systemName: "flag.fill")
-                            .foregroundStyle(task.priority.color)
+                        Image(systemName: "flag.fill").foregroundStyle(task.priority.color)
                         TextField("موضوع المهمة", text: $task.title)
                             .font(.title3.weight(.semibold))
                             .textInputAutocapitalization(.sentences)
                     }
-                    
                     HStack(spacing: 8) {
                         Label(createdAtString, systemImage: "clock")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        
+                            .font(.footnote).foregroundStyle(.secondary)
                         Spacer()
-                        
                         Menu {
                             Picker("تكرار", selection: $task.recurrence) {
                                 ForEach(TaskRecurrence.allCases) { r in
                                     Label(r.title, systemImage: r.symbol).tag(r)
                                 }
                             }
-                        } label: {
-                            Label(task.recurrence.title, systemImage: task.recurrence.symbol)
-                        }
+                        } label: { Label(task.recurrence.title, systemImage: task.recurrence.symbol) }
                         .font(.footnote)
                     }
-                    
-                    Toggle(isOn: $task.isDone) {
-                        Text(task.isDone ? "منجزة" : "غير منجزة")
-                    }
-                    .onChange(of: task.isDone) { _, _ in
-                        syncStepsWithTask()
-                    }
-                    
+                    Toggle(isOn: $task.isDone) { Text(task.isDone ? "منجزة" : "غير منجزة") }
+                        .onChange(of: task.isDone) { _, _ in
+                            if task.isDone {
+                                for i in task.steps.indices {
+                                    task.steps[i].isDone = true
+                                    task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+                                }
+                            }
+                        }
                     Toggle(isOn: Binding(
                         get: { task.isInDaily },
                         set: { newValue in
@@ -1154,18 +1010,11 @@ struct TaskDetailView: View {
         }
         .navigationTitle("تفاصيل المهمة")
         .navigationBarTitleDisplayMode(.inline)
-        .fileImporter(
-            isPresented: $isFileImporterPresented,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: false
-        ) { result in
+        .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first {
-                    addAttachment(from: url)
-                }
-            case .failure:
-                break
+                if let url = urls.first { addAttachment(from: url) }
+            case .failure: break
             }
         }
         .onChange(of: selectedPhotoItem) { _, newValue in
@@ -1188,40 +1037,25 @@ struct TaskDetailView: View {
     private var attachmentsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("المرفقات", systemImage: "paperclip")
-                    .font(.headline)
+                Label("المرفقات", systemImage: "paperclip").font(.headline)
                 Spacer()
                 Menu {
-                    Button {
-                        isFileImporterPresented = true
-                    } label: {
-                        Label("مستند/ملف", systemImage: "doc")
-                    }
+                    Button { isFileImporterPresented = true } label: { Label("مستند/ملف", systemImage: "doc") }
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                         Label("صورة من الصور", systemImage: "photo")
                     }
-                } label: {
-                    Label("إضافة", systemImage: "plus.circle.fill")
-                }
+                } label: { Label("إضافة", systemImage: "plus.circle.fill") }
             }
-            
             if task.attachments.isEmpty {
-                Text("لا توجد مرفقات")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+                Text("لا توجد مرفقات").foregroundStyle(.secondary).font(.subheadline)
             } else {
                 ForEach(task.attachments) { att in
                     HStack {
-                        Image(systemName: iconForAttachment(att.kind))
-                            .foregroundStyle(.secondary)
-                        Text(att.fileName)
-                            .lineLimit(1)
+                        Image(systemName: iconForAttachment(att.kind)).foregroundStyle(.secondary)
+                        Text(att.fileName).lineLimit(1)
                         Spacer()
-                        Button {
-                            removeAttachment(att)
-                        } label: {
-                            Image(systemName: "trash")
-                                .foregroundStyle(.red)
+                        Button { removeAttachment(att) } label: {
+                            Image(systemName: "trash").foregroundStyle(.red)
                         }
                     }
                     .padding(8)
@@ -1236,22 +1070,16 @@ struct TaskDetailView: View {
     private var stepsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("الخطوات", systemImage: "list.bullet.circle")
-                    .font(.headline)
+                Label("الخطوات", systemImage: "list.bullet.circle").font(.headline)
                 Spacer()
                 if !task.steps.isEmpty {
                     let doneCount = task.steps.filter { $0.isDone }.count
                     let total = task.steps.count
-                    Text("\(doneCount)/\(total)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Text("\(doneCount)/\(total)").font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            
             if task.steps.isEmpty {
-                Text("أضف أول خطوة لك بالأسفل.")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
+                Text("أضف أول خطوة لك بالأسفل.").foregroundStyle(.secondary).font(.subheadline)
             } else {
                 ForEach($task.steps) { $step in
                     HStack {
@@ -1262,41 +1090,28 @@ struct TaskDetailView: View {
                         } label: {
                             Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(step.isDone ? .green : .secondary)
-                        }
-                        .buttonStyle(.plain)
-                        
+                        }.buttonStyle(.plain)
                         TextField("وصف الخطوة", text: $step.title)
-                        
                         if let doneAt = step.completedAt, step.isDone {
-                            Text(shortDate(doneAt))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Text(shortDate(doneAt)).font(.caption2).foregroundStyle(.secondary)
                         }
-                        
                         Button {
                             removeStep(step.id)
                         } label: {
-                            Image(systemName: "minus.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.plain)
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }.buttonStyle(.plain)
                     }
                     .padding(8)
                     .background(Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
-            
             HStack {
                 TextField("أدخل خطوة جديدة...", text: $newStepTitle)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addStep)
-                Button {
-                    addStep()
-                } label: {
-                    Label("إضافة خطوة", systemImage: "plus.circle.fill")
-                }
-                .disabled(newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button { addStep() } label: { Label("إضافة خطوة", systemImage: "plus.circle.fill") }
+                    .disabled(newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(.horizontal)
@@ -1304,8 +1119,7 @@ struct TaskDetailView: View {
     
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("ملاحظات", systemImage: "square.and.pencil")
-                .font(.headline)
+            Label("ملاحظات", systemImage: "square.and.pencil").font(.headline)
             TextEditor(text: $task.notes)
                 .frame(minHeight: 160)
                 .padding(8)
@@ -1315,8 +1129,6 @@ struct TaskDetailView: View {
         .padding(.horizontal)
     }
     
-    // MARK: - Steps helpers
-    
     private func addStep() {
         let t = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
@@ -1324,35 +1136,18 @@ struct TaskDetailView: View {
         newStepTitle = ""
         autoCompleteTaskIfNeeded()
     }
-    
     private func removeStep(_ id: UUID) {
         task.steps.removeAll { $0.id == id }
         autoCompleteTaskIfNeeded()
     }
-    
     private func autoCompleteTaskIfNeeded() {
         guard !task.steps.isEmpty else { return }
-        let allDone = task.steps.allSatisfy { $0.isDone }
-        task.isDone = allDone
+        task.isDone = task.steps.allSatisfy { $0.isDone }
     }
-    
-    private func syncStepsWithTask() {
-        if task.isDone {
-            for i in task.steps.indices {
-                task.steps[i].isDone = true
-                task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-            }
-        }
-    }
-    
     private func shortDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ar")
-        f.dateFormat = "d MMM - h:mm a"
+        let f = DateFormatter(); f.locale = Locale(identifier: "ar"); f.dateFormat = "d MMM - h:mm a"
         return f.string(from: date)
     }
-    
-    // MARK: - Attachments helpers
     
     private func iconForAttachment(_ kind: AttachmentKind) -> String {
         switch kind {
@@ -1362,7 +1157,6 @@ struct TaskDetailView: View {
         case .other: return "paperclip"
         }
     }
-    
     private func addAttachment(from sourceURL: URL) {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -1379,11 +1173,8 @@ struct TaskDetailView: View {
                 let kind = kindForFileExtension(destURL.pathExtension)
                 task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
             }
-        } catch {
-            // TODO: عرض تنبيه للمستخدم
-        }
+        } catch { }
     }
-    
     private func addImageAttachment(data: Data, suggestedName: String) {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -1392,29 +1183,22 @@ struct TaskDetailView: View {
         do {
             try data.write(to: url)
             task.attachments.append(TaskAttachment(fileName: name, fileURL: url, kind: .image))
-        } catch {
-            // TODO: عرض تنبيه للمستخدم
-        }
+        } catch { }
     }
-    
     private func removeAttachment(_ att: TaskAttachment) {
         task.attachments.removeAll { $0.id == att.id }
-        // حذف الملف من القرص حسب الإعداد
-        if (storeEnv.deleteAttachmentFilesOnRemove) {
-            storeEnv.removeAttachmentFile(at: att.fileURL)
-        }
+        if (storeEnv.deleteAttachmentFilesOnRemove) { storeEnv.removeAttachmentFile(at: att.fileURL) }
     }
-    
     private func kindForFileExtension(_ ext: String) -> AttachmentKind {
         let e = ext.lowercased()
-        if ["png", "jpg", "jpeg", "heic"].contains(e) { return .image }
-        if ["m4a", "mp3", "wav", "aac"].contains(e) { return .audio }
-        if ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "rtf"].contains(e) { return .document }
+        if ["png","jpg","jpeg","heic"].contains(e) { return .image }
+        if ["m4a","mp3","wav","aac"].contains(e) { return .audio }
+        if ["pdf","doc","docx","ppt","pptx","xls","xlsx","txt","rtf"].contains(e) { return .document }
         return .other
     }
 }
 
-// MARK: - Settings View
+// MARK: - Settings View (كما لديك)
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -1440,49 +1224,32 @@ struct SettingsView: View {
                         }
                     DatePicker("وقت التذكير اليومي", selection: $store.dailyReminderTime, displayedComponents: .hourAndMinute)
                         .onChange(of: store.dailyReminderTime) { _, new in
-                            if store.notificationsEnabled {
-                                store.scheduleDailyReminder(at: new)
-                            }
+                            if store.notificationsEnabled { store.scheduleDailyReminder(at: new) }
                         }
-                    Button("اختبار إشعار الآن") {
-                        store.scheduleTestNotification()
-                    }
+                    Button("اختبار إشعار الآن") { store.scheduleTestNotification() }
                 }
                 
                 Section("النسخ الاحتياطي والاستعادة") {
                     Button("تصدير البيانات كـ JSON") {
                         exportURL = store.exportData()
-                        if exportURL != nil {
-                            isSharePresented = true
-                        }
+                        if exportURL != nil { isSharePresented = true }
                     }
                     .disabled(store.pages.isEmpty)
                     .sheet(isPresented: $isSharePresented) {
-                        if let url = exportURL {
-                            ShareSheet(activityItems: [url])
-                        }
+                        if let url = exportURL { ShareSheet(activityItems: [url]) }
                     }
                     
-                    Button("استيراد بيانات من JSON") {
-                        isImporterPresented = true
-                    }
+                    Button("استيراد بيانات من JSON") { isImporterPresented = true }
                     .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.json]) { result in
                         switch result {
                         case .success(let url):
-                            do {
-                                try store.importData(from: url)
-                            } catch {
-                                importError = true
-                            }
-                        case .failure:
-                            importError = true
+                            do { try store.importData(from: url) } catch { importError = true }
+                        case .failure: importError = true
                         }
                     }
                     .alert("فشل الاستيراد", isPresented: $importError) {
                         Button("حسنًا", role: .cancel) { }
-                    } message: {
-                        Text("تأكد أن الملف بتنسيق التطبيق الصحيح.")
-                    }
+                    } message: { Text("تأكد أن الملف بتنسيق التطبيق الصحيح.") }
                 }
                 
                 Section("المرفقات") {
@@ -1492,16 +1259,11 @@ struct SettingsView: View {
                 Section("حول التطبيق") {
                     Link("سياسة الخصوصية", destination: URL(string: "https://example.com/privacy")!)
                     Text("البيانات تحفظ محليًا على جهازك. لا توجد خوادم.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("الإعدادات")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("إغلاق") { dismiss() }
-                }
-            }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
         }
     }
 }

@@ -256,6 +256,7 @@
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -289,6 +290,7 @@
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
