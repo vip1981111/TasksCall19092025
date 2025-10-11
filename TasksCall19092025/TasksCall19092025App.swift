@@ -15,6 +15,7 @@ struct TasksCall19092025App: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .environment(\.layoutDirection, .rightToLeft)
         }
     }
 }
