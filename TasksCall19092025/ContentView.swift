@@ -25,6 +25,7 @@ enum TaskPriority: String, Codable, CaseIterable, Identifiable {
         }
     }
     
+    // طلبك (2): المتوسطة برتقالي. العالية أحمر. المنخفضة أخضر.
     var color: Color {
         switch self {
         case .low: return .green
@@ -239,17 +240,33 @@ final class TasksStore: ObservableObject {
         ]
     }
     
-    // Pages
-    func addPage(named name: String) {
-        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        withAnimation { pages.append(TaskPage(name: t)) }
+    // Helper: name duplicate check (case/whitespace-insensitive)
+    private func isDuplicatePageName(_ name: String, excludingID: UUID? = nil) -> Bool {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !target.isEmpty else { return true }
+        return pages.contains { page in
+            if let ex = excludingID, page.id == ex { return false }
+            return page.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == target
+        }
     }
-    func renamePage(id: UUID, to newName: String) {
-        guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
+    
+    // Pages
+    @discardableResult
+    func addPage(named name: String) -> Bool {
+        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        guard !isDuplicatePageName(t) else { return false }
+        withAnimation { pages.append(TaskPage(name: t)) }
+        return true
+    }
+    @discardableResult
+    func renamePage(id: UUID, to newName: String) -> Bool {
+        guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return false }
         let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty else { return false }
+        guard !isDuplicatePageName(t, excludingID: id) else { return false }
         withAnimation { pages[i].name = t }
+        return true
     }
     func deletePage(id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
@@ -431,6 +448,10 @@ struct ContentView: View {
     
     @State private var isShowingSettings: Bool = false
     
+    // Alerts for duplicate page name
+    @State private var showAddDuplicateAlert: Bool = false
+    @State private var showRenameDuplicateAlert: Bool = false
+    
     private var currentPage: TaskPage? {
         guard let id = selectedPageID else {
             return store.pages.first(where: { $0.isDaily }) ?? store.pages.first
@@ -517,7 +538,10 @@ struct ContentView: View {
                                     toggleDailyForTaskBinding($task, to: newValue)
                                 })
                             } label: {
-                                TaskCardRow(task: $task)
+                                TaskCardRow(
+                                    task: $task,
+                                    pageName: pageNameForTask(task.id)
+                                )
                             }
                             .swipeActions(edge: .trailing) {
                                 if currentPage?.isDaily != true, let pageID = pageIDForTask(task.id) {
@@ -596,6 +620,7 @@ struct ContentView: View {
                 if selectedPageID == nil { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
                 store.requestNotificationAuthorizationIfNeeded()
             }
+            // طلبك (3): العنوان يظهر مرة واحدة فقط
             .navigationTitle(navigationTitleText)
         }
     }
@@ -623,14 +648,9 @@ struct ContentView: View {
     }
     
     private var chipsPagesBar: some View {
+        // طلبك (1): زر + أولاً ثم اليومي ثم بقية الصفحات
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if let daily = store.pages.first(where: { $0.isDaily }) {
-                    pageChip(for: daily)
-                }
-                ForEach(store.pages.filter { !$0.isDaily }) { page in
-                    pageChip(for: page)
-                }
                 Button {
                     isAddingPage = true
                 } label: {
@@ -641,6 +661,13 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.accentColor)
                 .accessibilityLabel("إضافة صفحة جديدة")
+                
+                if let daily = store.pages.first(where: { $0.isDaily }) {
+                    pageChip(for: daily)
+                }
+                ForEach(store.pages.filter { !$0.isDaily }) { page in
+                    pageChip(for: page)
+                }
             }
             .padding(.horizontal)
         }
@@ -661,6 +688,11 @@ struct ContentView: View {
                             .disabled(newPageName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+                .alert("اسم الصفحة مكرر", isPresented: $showAddDuplicateAlert) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text("يوجد صفحة أخرى بنفس الاسم. اختر اسمًا مختلفًا.")
+                }
             }
         }
         .sheet(item: $renamingPage) { page in
@@ -679,6 +711,11 @@ struct ContentView: View {
                         Button("حفظ") { renamePage(id: page.id) }
                             .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                }
+                .alert("اسم الصفحة مكرر", isPresented: $showRenameDuplicateAlert) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text("يوجد صفحة أخرى بنفس الاسم. اختر اسمًا مختلفًا.")
                 }
             }
         }
@@ -800,15 +837,24 @@ struct ContentView: View {
     private func addPage() {
         let name = newPageName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        store.addPage(named: name)
-        if let newID = store.pages.last?.id { selectedPageID = newID }
-        newPageName = ""; isAddingPage = false
+        let ok = store.addPage(named: name)
+        if ok {
+            if let newID = store.pages.last?.id { selectedPageID = newID }
+            newPageName = ""; isAddingPage = false
+        } else {
+            // duplicate or invalid name
+            showAddDuplicateAlert = true
+        }
     }
     private func renamePage(id: UUID) {
         let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        store.renamePage(id: id, to: name)
-        renamingPage = nil
+        let ok = store.renamePage(id: id, to: name)
+        if ok {
+            renamingPage = nil
+        } else {
+            showRenameDuplicateAlert = true
+        }
     }
     
     // MARK: - Helpers
@@ -833,6 +879,12 @@ struct ContentView: View {
         }
         return nil
     }
+    private func pageNameForTask(_ taskID: UUID) -> String? {
+        for page in store.pages where !page.isDaily {
+            if page.tasks.contains(where: { $0.id == taskID }) { return page.name }
+        }
+        return currentPage?.isDaily == true ? "اليومي" : nil
+    }
     private func toggleDailyForTaskBinding(_ taskBinding: Binding<TaskItem>, to newValue: Bool) {
         let task = taskBinding.wrappedValue
         if let pageID = pageIDForTask(task.id) {
@@ -846,84 +898,99 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Task Card Row (تصميم بطاقة مطابق للصورة)
+// MARK: - Task Card Row (تصميم حسب طلبك 4)
 
 private struct TaskCardRow: View {
     @Binding var task: TaskItem
+    var pageName: String?
+    
+    // تقدم الخطوات
+    private var stepsProgress: Double {
+        guard !task.steps.isEmpty else { return 0 }
+        let done = task.steps.filter { $0.isDone }.count
+        return Double(done) / Double(task.steps.count)
+    }
+    private var stepsPercentText: String {
+        let pct = Int(round(stepsProgress * 100))
+        return "\(pct)%"
+    }
     
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // زر إنجاز
-            Button {
-                task.isDone.toggle()
-                if task.isDone {
-                    for i in task.steps.indices {
-                        task.steps[i].isDone = true
-                        task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+        VStack(alignment: .leading, spacing: 8) {
+            // السطر الأول: دائرة الاختيار بلون الأولوية، اسم المهمة، أيقونة اليومي، بادج الأولوية
+            HStack(spacing: 10) {
+                Button {
+                    task.isDone.toggle()
+                    if task.isDone {
+                        for i in task.steps.indices {
+                            task.steps[i].isDone = true
+                            task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+                        }
                     }
+                } label: {
+                    Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(task.isDone ? task.priority.color : task.priority.color)
+                        .font(.system(size: 22))
                 }
-            } label: {
-                Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(task.isDone ? .green : .secondary)
-                    .font(.system(size: 22))
-            }
-            .buttonStyle(.plain)
-            
-            // بادج أولوية
-            Text(task.priority.title)
-                .font(.caption.bold())
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(task.priority.color)
-                .clipShape(Capsule())
-            
-            // عنوان + أيقونات صغيرة + تاريخ
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    if task.isInDaily {
-                        Image(systemName: "sun.max.fill")
-                            .foregroundStyle(.yellow)
-                            .imageScale(.small)
-                    }
-                    Text(task.title)
-                        .lineLimit(1)
-                        .strikethrough(task.isDone, color: .secondary)
-                        .foregroundStyle(task.isDone ? .secondary : .primary)
+                .buttonStyle(.plain)
+                
+                Text(task.title)
+                    .lineLimit(1)
+                    .strikethrough(task.isDone, color: .secondary)
+                    .foregroundStyle(task.isDone ? .secondary : .primary)
+                
+                if task.isInDaily {
+                    Image(systemName: "sun.max.fill")
+                        .foregroundStyle(.yellow)
+                        .imageScale(.small)
                 }
                 
-                HStack(spacing: 10) {
-                    // خطوات
-                    if !task.steps.isEmpty {
-                        let done = task.steps.filter { $0.isDone }.count
-                        let total = task.steps.count
-                        Label("\(done)/\(total)", systemImage: "checklist")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    // مرفقات
-                    if !task.attachments.isEmpty {
-                        Label("\(task.attachments.count)", systemImage: "paperclip")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    // ملاحظات
-                    if !task.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Image(systemName: "square.and.pencil")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Text(createdAtString(task.createdAt))
+                Text(task.priority.title)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(task.priority.color)
+                    .clipShape(Capsule())
+            }
+            
+            // السطر الثاني: اليوم/التاريخ/الوقت + اسم الصفحة
+            HStack(spacing: 6) {
+                Text(createdAtString(task.createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let page = pageName, !page.isEmpty {
+                    Text("• \(page)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                Spacer()
             }
             
-            // نقطة حالة يمين
-            Circle()
-                .fill(task.isDone ? Color.green : task.priority.color)
-                .frame(width: 12, height: 12)
+            // شريط التقدم للخطوات (يظهر فقط عند وجود خطوات)
+            if !task.steps.isEmpty {
+                VStack(spacing: 6) {
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                            .frame(height: 6)
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(task.priority.color)
+                                .frame(width: max(6, geo.size.width * stepsProgress), height: 6)
+                                .animation(.easeInOut(duration: 0.25), value: stepsProgress)
+                        }
+                        .frame(height: 6)
+                    }
+                    HStack {
+                        let done = task.steps.filter { $0.isDone }.count
+                        Text("تقدم الخطوات: \(done)/\(task.steps.count) (\(stepsPercentText))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+            }
         }
         .padding(12)
         .background(
@@ -942,7 +1009,7 @@ private struct TaskCardRow: View {
     }
 }
 
-// MARK: - Task Detail View (بدون تغيير كبير)
+// MARK: - Task Detail View
 
 struct TaskDetailView: View {
     @Binding var task: TaskItem
@@ -1198,7 +1265,7 @@ struct TaskDetailView: View {
     }
 }
 
-// MARK: - Settings View (كما لديك)
+// MARK: - Settings View
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
