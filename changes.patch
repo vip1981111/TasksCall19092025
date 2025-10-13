@@ -1,0 +1,978 @@
+diff --git a/ContentView.swift b/ContentView.swift
+new file mode 100644
+index 0000000..1111111
+--- a/ContentView.swift
++++ b/ContentView.swift
+@@ -1,0 +1,999 @@
+//
++//  ContentView.swift
++//  Taskblue09102025
++//
++//  Created by MOHAMMED ABDULLAH on 09/10/2025.
++//
++
++import SwiftUI
++import Combine
++import UserNotifications
++import PhotosUI
++import VisionKit
++import UniformTypeIdentifiers
++import QuickLook
++
++// MARK: - Models
++
++enum TaskPriority: String, CaseIterable, Identifiable, Codable {
++    case high = "عالية", medium = "متوسطة", low = "منخفضة"
++    var id: String { rawValue }
++    var color: Color { self == .high ? .red : (self == .medium ? .orange : .green) }
++}
++
++struct TaskItem: Identifiable, Hashable, Codable {
++    let id: UUID
++    var title: String
++    var notes: String
++    var dueDate: Date?
++    var isCompleted: Bool
++    var isToday: Bool
++    var frequency: ReminderFrequency
++    var steps: [TaskStep]
++    var attachments: [AttachmentItem]
++    var priority: TaskPriority
++    var createdAt: Date
++
++    init(
++        id: UUID = UUID(),
++        title: String,
++        notes: String = "",
++        dueDate: Date? = nil,
++        isCompleted: Bool = false,
++        isToday: Bool = false,
++        frequency: ReminderFrequency = .none,
++        steps: [TaskStep] = [],
++        attachments: [AttachmentItem] = [],
++        priority: TaskPriority = .medium,
++        createdAt: Date = .now
++    ) {
++        self.id = id; self.title = title; self.notes = notes; self.dueDate = dueDate
++        self.isCompleted = isCompleted; self.isToday = isToday; self.frequency = frequency
++        self.steps = steps; self.attachments = attachments; self.priority = priority; self.createdAt = createdAt
++    }
++
++    var completionProgress: Double {
++        guard !steps.isEmpty else { return isCompleted ? 1.0 : 0.0 }
++        let done = steps.filter { $0.isDone }.count
++        return Double(done) / Double(steps.count)
++    }
++    var statusDotColor: Color { priority.color }
++}
++
++struct TaskStep: Identifiable, Hashable, Codable {
++    let id: UUID
++    var title: String
++    var isDone: Bool
++    init(id: UUID = UUID(), title: String, isDone: Bool = false) { self.id = id; self.title = title; self.isDone = isDone }
++}
++
++enum AttachmentKind: String, CaseIterable, Identifiable, Codable {
++    case image = "صورة", document = "مستند", scan = "مسح ضوئي"
++    var id: String { rawValue }
++    var systemImage: String { self == .image ? "photo" : (self == .document ? "doc" : "doc.viewfinder") }
++}
++
++struct AttachmentItem: Identifiable, Hashable, Codable {
++    let id: UUID
++    var name: String
++    var kind: AttachmentKind
++    var addedAt: Date
++    var fileURL: URL?
++    init(id: UUID = UUID(), name: String, kind: AttachmentKind, addedAt: Date = .now, fileURL: URL? = nil) {
++        self.id = id; self.name = name; self.kind = kind; self.addedAt = addedAt; self.fileURL = fileURL
++    }
++}
++
++enum ReminderFrequency: String, CaseIterable, Identifiable, Codable {
++    case none = "بدون", daily = "يومي", weekly = "أسبوعي", monthly = "شهري"
++    var id: String { rawValue }
++}
++
++// MARK: - TaskStore
++
++struct TaskStore {
++    static let jsonFilename = "tasks.json"
++    static let attachmentsFolder = "Attachments"
++
++    static var documentsDir: URL {
++        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
++    }
++    static var jsonURL: URL { documentsDir.appendingPathComponent(jsonFilename) }
++    static var attachmentsDir: URL {
++        let url = documentsDir.appendingPathComponent(attachmentsFolder)
++        if !FileManager.default.fileExists(atPath: url.path) {
++            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
++        }
++        return url
++    }
++
++    static func save(_ tasks: [TaskItem]) {
++        do {
++            let data = try JSONEncoder().encode(tasks)
++            try data.write(to: jsonURL, options: .atomic)
++        } catch { print("Save error:", error) }
++    }
++
++    static func load() -> [TaskItem] {
++        do {
++            let data = try Data(contentsOf: jsonURL)
++            return try JSONDecoder().decode([TaskItem].self, from: data)
++        } catch { return [] }
++    }
++
++    static func saveData(_ data: Data, preferredName: String) -> URL? {
++        let safe = preferredName.trimmingCharacters(in: .whitespacesAndNewlines)
++        let base = safe.isEmpty ? UUID().uuidString : safe
++        let dest = uniqueURL(base, in: attachmentsDir)
++        do { try data.write(to: dest, options: .atomic); return dest } catch {
++            print("Write file error:", error); return nil
++        }
++    }
++
++    static func copyIn(_ source: URL) -> URL? {
++        let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
++        do {
++            if FileManager.default.fileExists(atPath: dest.path) { try? FileManager.default.removeItem(at: dest) }
++            try FileManager.default.copyItem(at: source, to: dest)
++            return dest
++        } catch { print("Copy file error:", error); return nil }
++    }
++
++    static func orphanFiles(against tasks: [TaskItem]) -> [URL] {
++        let linked = Set(tasks.flatMap { $0.attachments.compactMap({ $0.fileURL?.lastPathComponent }) })
++        let urls = (try? FileManager.default.contentsOfDirectory(at: attachmentsDir, includingPropertiesForKeys: nil)) ?? []
++        return urls.filter { !linked.contains($0.lastPathComponent) }
++    }
++
++    static func cleanTemp() {
++        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
++        let contents = (try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil)) ?? []
++        contents.forEach { try? FileManager.default.removeItem(at: $0) }
++    }
++
++    private static func uniqueURL(_ name: String, in folder: URL) -> URL {
++        let base = (name as NSString).lastPathComponent
++        let ext = (base as NSString).pathExtension
++        let stem = (base as NSString).deletingPathExtension
++        var dest = folder.appendingPathComponent(base.isEmpty ? UUID().uuidString : base)
++        while FileManager.default.fileExists(atPath: dest.path) {
++            let newName = "\(stem)-\(UUID().uuidString)" + (ext.isEmpty ? "" : ".\(ext)")
++            dest = folder.appendingPathComponent(newName)
++        }
++        return dest
++    }
++}
++
++// MARK: - Notification Manager
++
++final class NotificationManager: ObservableObject {
++    static let shared = NotificationManager()
++    @Published var permissionGranted: Bool = false
++    private init() { }
++
++    func requestAuthorization() {
++        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
++            DispatchQueue.main.async { self.permissionGranted = granted }
++        }
++    }
++
++    func schedule(for task: TaskItem) {
++        guard permissionGranted else { return }
++        let content = UNMutableNotificationContent()
++        content.title = "تذكير بالمهمة"
++        content.body = task.title
++        content.sound = .default
++        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)
++        let req = UNNotificationRequest(identifier: task.id.uuidString, content: content, trigger: trigger)
++        UNUserNotificationCenter.current().add(req)
++    }
++}
++
++// MARK: - App Filters / Tabs
++
++enum ListScope: String, CaseIterable, Identifiable {
++    case appTest = "اختبار التطبيق"
++    case today = "اليومي"
++    case stage = "اختبار التطبيق المرحلة"
++    var id: String { rawValue }
++}
++
++enum StatusFilter: String, CaseIterable, Identifiable {
++    case all = "الكل"
++    case done = "منجزة"
++    case notDone = "غير منجزة"
++    var id: String { rawValue }
++}
++
++// MARK: - Root
++
++struct ContentView: View {
++    @State private var tasks: [TaskItem] = []
++    @State private var showSettings = false
++    @State private var saveTask: Task<Void, Never>?  // debounce
++
++    var body: some View {
++        TabView {
++            MainListView(tasks: $tasks, scope: .today)
++                .tabItem { Label("اليومي", systemImage: "sun.max") }
++
++            MainListView(tasks: $tasks, scope: .appTest)
++                .tabItem { Label("كل المهام", systemImage: "checklist") }
++
++            SearchView(tasks: $tasks)
++                .tabItem { Label("بحث", systemImage: "magnifyingglass") }
++        }
++        .onAppear {
++            let loaded = TaskStore.load()
++            if loaded.isEmpty {
++                self.tasks = [
++                    TaskItem(title: "مثال: مهمة عالية", isToday: true, frequency: .daily, priority: .high),
++                    TaskItem(title: "مثال: مهمة متوسطة", isToday: true, priority: .medium),
++                    TaskItem(title: "مثال: مهمة منخفضة", isCompleted: true, priority: .low),
++                ]
++                TaskStore.save(self.tasks)
++            } else { self.tasks = loaded }
++        }
++        .onChange(of: tasks) { _, newValue in
++            saveTask?.cancel()
++            saveTask = Task { try? await Task.sleep(nanoseconds: 500_000_000); TaskStore.save(newValue) }
++        }
++        .toolbar {
++            ToolbarItem(placement: .topBarTrailing) {
++                Button {
++                    showSettings = true
++                } label: {
++                    Image(systemName: "gearshape")
++                }
++                .accessibilityLabel("الإعدادات")
++            }
++        }
++        .sheet(isPresented: $showSettings) { SettingsView(tasksBinding: $tasks) }
++        .environment(\.layoutDirection, .rightToLeft)
++        .environment(\.locale, Locale(identifier: "ar"))
++    }
++}
++
++// MARK: - Main List
++
++struct MainListView: View {
++    @Binding var tasks: [TaskItem]
++    let scope: ListScope
++
++    @State private var selectedScope: ListScope
++    @State private var status: StatusFilter = .all
++    @State private var orderByPriority: Bool = true
++    @State private var query: String = ""
++
++    init(tasks: Binding<[TaskItem]>, scope: ListScope) {
++        _tasks = tasks
++        self.scope = scope
++        _selectedScope = State(initialValue: scope)
++    }
++
++    var filtered: [TaskItem] {
++        var base = tasks
++
++        if selectedScope == .today {
++            base = base.filter { $0.isToday }
++        }
++
++        switch status {
++        case .all: break
++        case .done: base = base.filter { $0.isCompleted }
++        case .notDone: base = base.filter { !$0.isCompleted }
++        }
++
++        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++            base = base.filter { t in
++                t.title.localizedCaseInsensitiveContains(query) ||
++                t.notes.localizedCaseInsensitiveContains(query)
++            }
++        }
++
++        if orderByPriority {
++            base.sort {
++                func weight(_ p: TaskPriority) -> Int { p == .high ? 0 : (p == .medium ? 1 : 2) }
++                if weight($0.priority) != weight($1.priority) { return weight($0.priority) < weight($1.priority) }
++                return $0.createdAt > $1.createdAt
++            }
++        } else {
++            base.sort { $0.createdAt > $1.createdAt }
++        }
++        return base
++    }
++
++    var body: some View {
++        NavigationStack {
++            VStack(spacing: 8) {
++                HStack {
++                    Text(titleString).font(.system(size: 26, weight: .bold))
++                    Spacer()
++                    EditButton().buttonStyle(.bordered).clipShape(Capsule()).tint(.secondary)
++                }
++                .padding(.horizontal)
++
++                ScrollView(.horizontal, showsIndicators: false) {
++                    HStack(spacing: 8) {
++                        Spacer()
++                        Button {
++                            withAnimation {
++                                tasks.insert(TaskItem(title: "مهمة جديدة", isToday: selectedScope == .today), at: 0)
++                            }
++                        } label: {
++                            ChipLabel(title: "", systemImage: "plus", isSelected: false)
++                        }
++                        Chip(title: ListScope.today.rawValue, isSelected: selectedScope == .today, systemImage: "sun.max") {
++                            selectedScope = .today
++                        }
++                        ForEach(ListScope.allCases.filter { $0 != .today }) { scope in
++                            Chip(title: scope.rawValue, isSelected: scope == selectedScope, systemImage: nil) {
++                                selectedScope = scope
++                            }
++                        }
++                    }
++                    .padding(.horizontal)
++                }
++
++                HStack {
++                    Picker("", selection: $status) {
++                        ForEach(StatusFilter.allCases) { s in Text(s.rawValue).tag(s) }
++                    }
++                    .pickerStyle(.segmented)
++
++                    Toggle("", isOn: $orderByPriority)
++                        .labelsHidden()
++                        .toggleStyle(SwitchToggleStyle(tint: .green))
++                    Text("ترتيب بالأولوية")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                }
++                .padding(.horizontal)
++
++                HStack {
++                    Image(systemName: "magnifyingglass")
++                    TextField("ابحث في المهام", text: $query)
++                        .multilineTextAlignment(.trailing)
++                }
++                .padding(10)
++                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
++
++                List {
++                    ForEach(filtered) { task in
++                        NavigationLink(value: task.id) {
++                            TaskCardView(task: binding(for: task))
++                        }
++                    }
++                    .onDelete { offsets in tasks.remove(atOffsets: offsets) }
++                }
++                .listStyle(.plain)
++            }
++            .padding(.top, 6)
++            .navigationDestination(for: UUID.self) { id in
++                if let bindingTask = binding(byID: id) {
++                    TaskDetailView(task: bindingTask, allTasks: $tasks)
++                } else {
++                    Text("لم يتم العثور على المهمة")
++                }
++            }
++            .navigationBarTitleDisplayMode(.inline)
++        }
++    }
++
++    private var titleString: String {
++        let count = filtered.count
++        return "\(selectedScope.rawValue) (\(count))"
++    }
++
++    private func binding(for task: TaskItem) -> Binding<TaskItem> {
++        guard let index = tasks.firstIndex(where: { $0.id == task.id }) else { return .constant(task) }
++        return $tasks[index]
++    }
++    private func binding(byID id: UUID) -> Binding<TaskItem>? {
++        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return nil }
++        return $tasks[index]
++    }
++}
++
++// MARK: - Task Card
++
++struct TaskCardView: View {
++    @Binding var task: TaskItem
++
++    var body: some View {
++        HStack(spacing: 12) {
++            Button {
++                task.isCompleted.toggle()
++            } label: {
++                ZStack {
++                    Circle()
++                        .stroke(task.priority.color, lineWidth: 2)
++                        .frame(width: 22, height: 22)
++                    if task.isCompleted {
++                        Image(systemName: "checkmark.circle.fill")
++                            .imageScale(.medium)
++                            .foregroundStyle(task.priority.color)
++                    }
++                }
++            }
++            .buttonStyle(.plain)
++
++            VStack(alignment: .trailing, spacing: 4) {
++                Text(task.title)
++                    .font(.headline)
++                    .lineLimit(1)
++                HStack(spacing: 8) {
++                    if task.isToday {
++                        Image(systemName: "sun.max")
++                            .imageScale(.small)
++                    }
++                    Text(task.priority.rawValue)
++                        .font(.caption).bold()
++                        .foregroundStyle(task.priority.color)
++                }
++            }
++            .frame(maxWidth: .infinity, alignment: .trailing)
++
++            HStack(spacing: 10) {
++                Image(systemName: "note.text")
++                    .opacity(task.notes.isEmpty ? 0.2 : 1.0)
++                Image(systemName: "paperclip")
++                    .opacity(task.attachments.isEmpty ? 0.2 : 1.0)
++            }
++        }
++        .padding(12)
++        .background(
++            RoundedRectangle(cornerRadius: 16, style: .continuous)
++                .fill(.background)
++                .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 3)
++        )
++        .contentShape(Rectangle())
++        .contextMenu {
++            Button(task.isCompleted ? "وضع كغير منجزة" : "وضع كمنجزة") { task.isCompleted.toggle() }
++            Button(task.isToday ? "إزالة من اليومي" : "إضافة إلى اليومي") { task.isToday.toggle() }
++            Menu("الأولوية") { ForEach(TaskPriority.allCases) { p in Button(p.rawValue) { task.priority = p } } }
++        }
++    }
++}
++
++struct PriorityBadge: View {
++    let priority: TaskPriority
++    var body: some View {
++        Text(priority.rawValue)
++            .font(.caption).bold()
++            .padding(.vertical, 4)
++            .padding(.horizontal, 8)
++            .background(priority.color.opacity(0.12), in: Capsule())
++            .overlay(Capsule().stroke(priority.color.opacity(0.5), lineWidth: 1))
++            .foregroundStyle(priority.color)
++    }
++}
++
++struct Chip: View {
++    let title: String
++    var isSelected: Bool
++    var systemImage: String? = nil
++    var action: () -> Void
++
++    var body: some View {
++        Button(action: action) {
++            ChipLabel(title: title, systemImage: systemImage, isSelected: isSelected)
++        }
++        .buttonStyle(.plain)
++    }
++}
++
++struct ChipLabel: View {
++    let title: String
++    var systemImage: String? = nil
++    var isSelected: Bool
++
++    var body: some View {
++        HStack(spacing: 6) {
++            if let img = systemImage { Image(systemName: img) }
++            if !title.isEmpty { Text(title) }
++        }
++        .font(.subheadline)
++        .padding(.vertical, 6)
++        .padding(.horizontal, 12)
++        .background(isSelected ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12), in: Capsule())
++        .overlay(Capsule().stroke(isSelected ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1))
++    }
++}
++
++// MARK: - Search View
++
++struct SearchView: View {
++    @Binding var tasks: [TaskItem]
++    @State private var query: String = ""
++
++    var filtered: [TaskItem] {
++        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return tasks }
++        return tasks.filter { t in
++            t.title.localizedCaseInsensitiveContains(query) ||
++            t.notes.localizedCaseInsensitiveContains(query) ||
++            t.steps.contains(where: { $0.title.localizedCaseInsensitiveContains(query) })
++        }
++    }
++
++    var body: some View {
++        NavigationStack {
++            List {
++                ForEach(filtered) { task in
++                    NavigationLink(value: task.id) {
++                        VStack(alignment: .leading, spacing: 4) {
++                            Text(task.title).font(.headline)
++                            if !task.notes.isEmpty {
++                                Text(task.notes).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
++                            }
++                        }
++                    }
++                }
++            }
++            .navigationTitle("بحث شامل")
++            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "ابحث في العناوين والملاحظات والخطوات")
++            .navigationDestination(for: UUID.self) { _ in EmptyView() }
++        }
++        .environment(\.layoutDirection, .rightToLeft)
++        .environment(\.locale, Locale(identifier: "ar"))
++    }
++}
++
++// MARK: - Task Detail
++
++struct TaskDetailView: View {
++    @Binding var task: TaskItem
++    @Binding var allTasks: [TaskItem]
++    @ObservedObject private var notifier = NotificationManager.shared
++
++    @State private var showRenameAlert = false
++    @State private var attachmentToRename: AttachmentItem?
++    @State private var newAttachmentName: String = ""
++
++    var body: some View {
++        Form {
++            Section("المهمة") {
++                TextField("العنوان", text: $task.title)
++                    .multilineTextAlignment(.trailing)
++                TextField("ملاحظات", text: $task.notes, axis: .vertical)
++                    .lineLimit(2...4)
++                    .multilineTextAlignment(.trailing)
++                Toggle("إظهار في صفحة اليومي", isOn: $task.isToday)
++                Picker("الأولوية", selection: $task.priority) {
++                    ForEach(TaskPriority.allCases) { p in Text(p.rawValue).tag(p) }
++                }
++                Picker("التذكير", selection: $task.frequency) {
++                    ForEach(ReminderFrequency.allCases) { f in Text(f.rawValue).tag(f) }
++                }
++                if task.frequency != .none {
++                    Button("اختبار إشعار الآن") { notifier.schedule(for: task) }
++                }
++                Toggle("تم الإنجاز", isOn: $task.isCompleted)
++            }
++
++            Section {
++                HStack {
++                    Text("نسبة الإنجاز")
++                    Spacer()
++                    ProgressRing(progress: task.completionProgress).frame(width: 28, height: 28)
++                }
++                StepListView(steps: $task.steps)
++            } header: { Text("الخطوات") }
++              footer: { Text("يتم حساب الدائرة حسب عدد الخطوات المكتملة.") }
++
++            Section {
++                AttachmentListView(
++                    attachments: $task.attachments,
++                    onRename: { att in
++                        attachmentToRename = att
++                        newAttachmentName = att.name
++                        showRenameAlert = true
++                    }
++                )
++                .alert("إعادة تسمية المرفق", isPresented: $showRenameAlert) {
++                    TextField("اسم المرفق", text: $newAttachmentName)
++                    Button("حفظ") {
++                        if let att = attachmentToRename,
++                           let idx = task.attachments.firstIndex(where: { $0.id == att.id }) {
++                            task.attachments[idx].name = newAttachmentName.trimmingCharacters(in: .whitespacesAndNewlines)
++                        }
++                        attachmentToRename = nil
++                    }
++                    Button("إلغاء", role: .cancel) { attachmentToRename = nil }
++                } message: { Text("اكتب الاسم الجديد للمرفق.") }
++            } header: { Text("المرفقات") }
++              footer: { Text("معاينة/مشاركة/إعادة تسمية/حذف — التنفيذ الفعلي مفعّل.") }
++        }
++        .navigationTitle("تفاصيل المهمة")
++        .toolbar {
++            ToolbarItemGroup(placement: .topBarTrailing) {
++                if !notifier.permissionGranted {
++                    Button("تفعيل الإشعارات") { notifier.requestAuthorization() }
++                }
++            }
++        }
++    }
++}
++
++// MARK: - Steps
++
++struct StepListView: View {
++    @Binding var steps: [TaskStep]
++    @State private var newStepTitle: String = ""
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            ForEach($steps) { $step in
++                HStack {
++                    Button { step.isDone.toggle() } label: {
++                        Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
++                    }.buttonStyle(.plain)
++                    TextField("وصف الخطوة", text: $step.title)
++                        .multilineTextAlignment(.trailing)
++                }
++                .padding(.vertical, 4)
++            }
++            HStack {
++                TextField("أضف خطوة جديدة", text: $newStepTitle)
++                    .multilineTextAlignment(.trailing)
++                Button {
++                    let trimmed = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
++                    guard !trimmed.isEmpty else { return }
++                    steps.append(TaskStep(title: trimmed))
++                    newStepTitle = ""
++                } label: { Image(systemName: "plus.circle.fill") }
++                .buttonStyle(.plain)
++            }
++            .padding(.top, 4)
++        }
++    }
++}
++
++// MARK: - UIKit Bridges
++
++struct DocPicker: UIViewControllerRepresentable {
++    var onPick: ([URL]) -> Void
++    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
++        let types: [UTType] = [.item]
++        let vc = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
++        vc.delegate = context.coordinator
++        vc.allowsMultipleSelection = false
++        return vc
++    }
++    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) { }
++    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
++    final class Coordinator: NSObject, UIDocumentPickerDelegate {
++        let onPick: ([URL]) -> Void
++        init(onPick: @escaping ([URL]) -> Void) { self.onPick = onPick }
++        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onPick(urls) }
++    }
++}
++
++struct DocumentScannerView: UIViewControllerRepresentable {
++    var onScan: ([UIImage]) -> Void
++    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
++        let vc = VNDocumentCameraViewController()
++        vc.delegate = context.coordinator
++        return vc
++    }
++    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) { }
++    func makeCoordinator() -> Coordinator { Coordinator(onScan: onScan) }
++    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
++        let onScan: ([UIImage]) -> Void
++        init(onScan: @escaping ([UIImage]) -> Void) { self.onScan = onScan }
++        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
++            var images: [UIImage] = []
++            for i in 0..<scan.pageCount { images.append(scan.imageOfPage(at: i)) }
++            onScan(images); controller.dismiss(animated: true)
++        }
++        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) { controller.dismiss(animated: true) }
++        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) { controller.dismiss(animated: true) }
++    }
++}
++
++// MARK: - QuickLook bridge
++
++struct QLPreview: UIViewControllerRepresentable {
++    let urls: [URL]
++    func makeUIViewController(context: Context) -> QLPreviewController {
++        let c = QLPreviewController()
++        context.coordinator.urls = urls
++        c.dataSource = context.coordinator
++        return c
++    }
++    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) { }
++    func makeCoordinator() -> Coordinator { Coordinator(urls: urls) }
++    final class Coordinator: NSObject, QLPreviewControllerDataSource {
++        var urls: [URL]
++        init(urls: [URL]) { self.urls = urls }
++        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { urls.count }
++        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { urls[index] as NSURL }
++    }
++}
++
++// MARK: - Attachments
++
++struct AttachmentListView: View {
++    @Binding var attachments: [AttachmentItem]
++    var onRename: (AttachmentItem) -> Void
++
++    @State private var showImagePicker = false
++    @State private var selectedPhotoItems: [PhotosPickerItem] = []
++    @State private var showDocPicker = false
++    @State private var showScanner = false
++
++    @State private var previewURLs: [URL] = []
++    @State private var showPreview = false
++
++    var body: some View {
++        VStack(alignment: .leading) {
++            if attachments.isEmpty {
++                ContentUnavailableView("لا توجد مرفقات", systemImage: "paperclip", description: Text("أضف صورًا أو مستندات أو مسحًا ضوئيًا"))
++                    .frame(maxWidth: .infinity)
++            } else {
++                ForEach(attachments) { att in
++                    HStack {
++                        Image(systemName: att.kind.systemImage)
++                        VStack(alignment: .trailing) {
++                            Text(att.name)
++                                .frame(maxWidth: .infinity, alignment: .trailing)
++                            Text(att.addedAt, style: .date)
++                                .font(.caption)
++                                .foregroundStyle(.secondary)
++                                .frame(maxWidth: .infinity, alignment: .trailing)
++                        }
++                        Spacer()
++                        Menu {
++                            Button { onRename(att) } label: { Label("إعادة تسمية", systemImage: "pencil") }
++                            Button(role: .destructive) { delete(att) } label: { Label("حذف", systemImage: "trash") }
++                            Divider()
++                            if let url = att.fileURL {
++                                ShareLink(item: url) { Label("مشاركة", systemImage: "square.and.arrow.up") }
++                                Button {
++                                    previewURLs = [url]
++                                    showPreview = true
++                                } label: { Label("معاينة", systemImage: "eye") }
++                            } else {
++                                Button { } label: { Label("مشاركة", systemImage: "square.and.arrow.up") }.disabled(true)
++                                Button { } label: { Label("معاينة", systemImage: "eye") }.disabled(true)
++                            }
++                        } label: { Image(systemName: "ellipsis.circle") }
++                    }
++                    .padding(.vertical, 4)
++                }
++            }
++
++            Menu {
++                Button { showImagePicker = true } label: { Label("إرفاق صورة", systemImage: "photo") }
++                Button { showDocPicker = true } label: { Label("إرفاق مستند", systemImage: "doc") }
++                Button { showScanner = true } label: { Label("مسح مستند", systemImage: "doc.viewfinder") }
++            } label: {
++                Label("إضافة مرفق", systemImage: "paperclip.circle.fill")
++                    .frame(maxWidth: .infinity, alignment: .leading)
++            }
++            .padding(.top, 6)
++
++            .photosPicker(isPresented: $showImagePicker, selection: $selectedPhotoItems, maxSelectionCount: 1, matching: .images)
++            .onChange(of: selectedPhotoItems) { _, newValue in
++                guard let item = newValue.first else { return }
++                Task {
++                    if let data = try? await item.loadTransferable(type: Data.self) {
++                        let suggested = (await item.itemIdentifier)?.split(separator: "/").last.map(String.init) ?? "صورة.jpg"
++                        if let url = TaskStore.saveData(data, preferredName: suggested) {
++                            attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
++                        }
++                    }
++                    selectedPhotoItems.removeAll()
++                }
++            }
++
++            .sheet(isPresented: $showDocPicker) {
++                DocPicker { urls in
++                    if let url = urls.first, let dest = TaskStore.copyIn(url) {
++                        attachments.append(AttachmentItem(name: dest.lastPathComponent, kind: .document, fileURL: dest))
++                    }
++                }
++            }
++
++            .fullScreenCover(isPresented: $showScanner) {
++                DocumentScannerView { images in
++                    let start = attachments.filter { $0.kind == .scan }.count + 1
++                    for (idx, img) in images.enumerated() {
++                        if let data = img.jpegData(compressionQuality: 0.9),
++                           let saved = TaskStore.saveData(data, preferredName: "مسح-\(start+idx).jpg") {
++                            attachments.append(AttachmentItem(name: saved.lastPathComponent, kind: .scan, fileURL: saved))
++                        }
++                    }
++                }
++                .ignoresSafeArea()
++            }
++        }
++        .sheet(isPresented: $showPreview) { QLPreview(urls: previewURLs) }
++    }
++
++    private func delete(_ att: AttachmentItem) {
++        if let idx = attachments.firstIndex(where: { $0.id == att.id }) {
++            if let url = attachments[idx].fileURL {
++                try? FileManager.default.removeItem(at: url)
++            }
++            attachments.remove(at: idx)
++        }
++    }
++}
++
++// MARK: - Progress Ring
++
++struct ProgressRing: View {
++    var progress: Double
++    var body: some View {
++        ZStack {
++            Circle().stroke(.quaternary, lineWidth: 6)
++            Circle()
++                .trim(from: 0, to: CGFloat(max(0, min(1, progress))))
++                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
++                .rotationEffect(.degrees(-90))
++            Text("\(Int((progress * 100).rounded()))%").font(.caption2)
++        }
++        .accessibilityLabel("نسبة الإنجاز \(Int((progress * 100).rounded())) بالمئة")
++    }
++}
++
++// MARK: - Settings
++
++struct SettingsView: View {
++    @Environment(\.dismiss) private var dismiss
++    @Binding var tasksBinding: [TaskItem]
++    @State private var deleteFileWhenRemoveAttachment = true
++    @State private var showExporter = false
++    @State private var exportURLs: [URL] = []
++    @State private var showImporterJSON = false
++    @State private var showImporterFolder = false
++    @State private var orphanList: [URL] = []
++
++    init(tasksBinding: Binding<[TaskItem]> = .constant([])) {
++        _tasksBinding = tasksBinding
++    }
++
++    var body: some View {
++        NavigationStack {
++            Form {
++                Section("أرشيف (بدون ZIP حاليًا)") {
++                    Button("تجهيز للتصدير (JSON + المرفقات)") {
++                        exportURLs = [TaskStore.jsonURL, TaskStore.attachmentsDir]
++                        showExporter = true
++                    }
++                    .sheet(isPresented: $showExporter) { DocumentExporter(urls: exportURLs) }
++
++                    Button("استيراد JSON (يستبدل المهام)") { showImporterJSON = true }
++                        .sheet(isPresented: $showImporterJSON) {
++                            SingleFileImporter(allowed: [.json]) { url in
++                                guard let url else { return }
++                                do {
++                                    let data = try Data(contentsOf: url)
++                                    let decoded = try JSONDecoder().decode([TaskItem].self, from: data)
++                                    tasksBinding = decoded
++                                    TaskStore.save(decoded)
++                                } catch { print("Import JSON error:", error) }
++                            }
++                        }
++
++                    Button("استيراد مجلد المرفقات") { showImporterFolder = true }
++                        .sheet(isPresented: $showImporterFolder) {
++                            FolderImporter { folderURL in
++                                guard let folderURL else { return }
++                                let files = (try? FileManager.default.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil)) ?? []
++                                for f in files { _ = TaskStore.copyIn(f) }
++                            }
++                        }
++                }
++
++                Section("المرفقات") {
++                    Toggle("حذف ملف المرفق عند الإزالة", isOn: $deleteFileWhenRemoveAttachment)
++                    Button("اكتشاف الملفات غير المرتبطة") { orphanList = TaskStore.orphanFiles(against: tasksBinding) }
++                    if !orphanList.isEmpty {
++                        ForEach(orphanList, id: \.self) { url in Text(url.lastPathComponent).font(.caption) }
++                        Button("حذف الملفات غير المرتبطة") {
++                            orphanList.forEach { try? FileManager.default.removeItem(at: $0) }
++                            orphanList = []
++                        }.foregroundStyle(.red)
++                    }
++                    HStack {
++                        Text("مجلد التخزين")
++                        Spacer()
++                        Text(TaskStore.documentsDir.path).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
++                    }
++                }
++
++                Section("الصيانة") {
++                    Button("تنظيف الملفات المؤقتة الآن") { TaskStore.cleanTemp() }
++                    Button("تنظيف الإشعارات اليتيمة الآن") {
++                        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
++                        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
++                    }
++                }
++
++                Section("حول التطبيق") {
++                    Text("البيانات تُحفظ محليًا على جهازك. لا توجد خوادم.").font(.footnote).foregroundStyle(.secondary)
++                }
++            }
++            .navigationTitle("الإعدادات")
++            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("إغلاق") { dismiss() } } }
++        }
++        .environment(\.layoutDirection, .rightToLeft)
++        .environment(\.locale, Locale(identifier: "ar"))
++    }
++}
++
++struct DocumentExporter: UIViewControllerRepresentable {
++    let urls: [URL]
++    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
++        UIDocumentPickerViewController(forExporting: urls, asCopy: true)
++    }
++    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) { }
++}
++
++struct SingleFileImporter: UIViewControllerRepresentable {
++    let allowed: [UTType]
++    let onPick: (URL?) -> Void
++    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
++        let vc = UIDocumentPickerViewController(forOpeningContentTypes: allowed, asCopy: true)
++        vc.delegate = context.coordinator
++        return vc
++    }
++    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) { }
++    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
++    final class Coordinator: NSObject, UIDocumentPickerDelegate {
++        let onPick: (URL?) -> Void
++        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
++        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onPick(urls.first) }
++        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onPick(nil) }
++    }
++}
++
++struct FolderImporter: UIViewControllerRepresentable {
++    let onPick: (URL?) -> Void
++    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
++        let vc = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: true)
++        vc.delegate = context.coordinator
++        return vc
++    }
++    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) { }
++    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
++    final class Coordinator: NSObject, UIDocumentPickerDelegate {
++        let onPick: (URL?) -> Void
++        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
++        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onPick(urls.first) }
++        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onPick(nil) }
++    }
++}
++
++// MARK: - Preview
++
++#Preview { ContentView() }

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import VisionKit
 import Combine
 import PhotosUI
 import UniformTypeIdentifiers
@@ -1014,6 +1015,7 @@ struct TaskDetailView: View {
     @State private var newStepTitle: String = ""
     @State private var selectedPhotoItem: PhotosPickerItem? = nil
     @State private var isFileImporterPresented: Bool = false
+    @State private var isDocumentScannerPresented: Bool = false
     
     var body: some View {
         ScrollView {
@@ -1087,6 +1089,15 @@ struct TaskDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $isDocumentScannerPresented) {
+            DocumentScannerView { scannedImages in
+                for image in scannedImages {
+                    if let data = image.jpegData(compressionQuality: 0.9) {
+                        addImageAttachment(data: data, suggestedName: "scan-\(UUID().uuidString).jpg")
+                    }
+                }
+            }
+        }
     }
     
     private var createdAtString: String {
@@ -1105,6 +1116,11 @@ struct TaskDetailView: View {
                     Button { isFileImporterPresented = true } label: { Label("مستند/ملف", systemImage: "doc") }
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                         Label("صورة من الصور", systemImage: "photo")
+                    }
+                    Button {
+                        isDocumentScannerPresented = true
+                    } label: {
+                        Label("مسح ضوئي", systemImage: "doc.text.viewfinder")
                     }
                 } label: { Label("إضافة", systemImage: "plus.circle.fill") }
             }
@@ -1128,6 +1144,51 @@ struct TaskDetailView: View {
         }
         .padding(.horizontal)
     }
+//MARK: - Document Scanner View
+
+struct DocumentScannerView: UIViewControllerRepresentable {
+    var onComplete: ([UIImage]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let vc = VNDocumentCameraViewController()
+        vc.delegate = context.coordinator
+        return vc
+    }
+    
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete, dismiss: dismiss)
+    }
+    
+    class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        var onComplete: ([UIImage]) -> Void
+        var dismiss: DismissAction
+        
+        init(onComplete: @escaping ([UIImage]) -> Void, dismiss: DismissAction) {
+            self.onComplete = onComplete
+            self.dismiss = dismiss
+        }
+        
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            var images: [UIImage] = []
+            for i in 0..<scan.pageCount {
+                images.append(scan.imageOfPage(at: i))
+            }
+            onComplete(images)
+            dismiss()
+        }
+        
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+            dismiss()
+        }
+        
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
+            dismiss()
+        }
+    }
+}
     
     private var stepsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1340,7 +1401,39 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
+// MARK: - Force RTL for UIKit-backed views
+
+private struct ForceRTLViewController: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        let vc = UIViewController()
+        vc.view.backgroundColor = .clear
+        // فرض الاتجاه على مستوى التسلسل الهرمي لواجهة UIKit
+        vc.view.semanticContentAttribute = .forceRightToLeft
+        vc.view.tintColor = UIColor.label
+        // عند تقديمه داخل SwiftUI، سيؤثر على القوائم المنبثقة التابعة له
+        return vc
+    }
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        uiViewController.view.semanticContentAttribute = .forceRightToLeft
+    }
+}
+
+private struct ForceRTLModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(ForceRTLViewController().ignoresSafeArea())
+            .environment(\.layoutDirection, .rightToLeft)
+    }
+}
+
+extension View {
+    func forceRTL() -> some View {
+        self.modifier(ForceRTLModifier())
+    }
+}
+
 #Preview {
     ContentView()
         .environmentObject(TasksStore())
+        .forceRTL()
 }
