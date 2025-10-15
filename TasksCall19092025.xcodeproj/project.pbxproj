@@ -257,6 +257,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
+				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -291,6 +292,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
+				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

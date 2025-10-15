@@ -1086,6 +1086,9 @@ struct TaskDetailView: View {
                 guard let item = newValue else { return }
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     addImageAttachment(data: data, suggestedName: "image.jpg")
+                } else if let image = try? await item.loadTransferable(type: UIImage.self),
+                          let data = image.jpegData(compressionQuality: 0.9) {
+                    addImageAttachment(data: data, suggestedName: "image.jpg")
                 }
             }
         }
@@ -1281,22 +1284,33 @@ struct DocumentScannerView: UIViewControllerRepresentable {
         }
     }
     private func addAttachment(from sourceURL: URL) {
+        // مهم: ملفات من تطبيق الملفات قد تكون Security-Scoped
+        let scoped = sourceURL.startAccessingSecurityScopedResource()
+        defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
+        
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
         let destURL = docs.appendingPathComponent(sourceURL.lastPathComponent)
         do {
             if fm.fileExists(atPath: destURL.path) {
-                let uniqueName = UUID().uuidString + "-" + sourceURL.lastPathComponent
-                let uniqueURL = docs.appendingPathComponent(uniqueName)
-                try fm.copyItem(at: sourceURL, to: uniqueURL)
-                let kind = kindForFileExtension(uniqueURL.pathExtension)
-                task.attachments.append(TaskAttachment(fileName: uniqueURL.lastPathComponent, fileURL: uniqueURL, kind: kind))
-            } else {
+                try fm.removeItem(at: destURL)
+            }
+            do {
+                // محاولة نسخ مباشرة
                 try fm.copyItem(at: sourceURL, to: destURL)
                 let kind = kindForFileExtension(destURL.pathExtension)
                 task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
+            } catch {
+                // مسار احتياطي: قراءة البيانات ثم كتابتها
+                let data = try Data(contentsOf: sourceURL)
+                try data.write(to: destURL, options: .atomic)
+                let kind = kindForFileExtension(destURL.pathExtension)
+                task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
             }
-        } catch { }
+        } catch {
+            // يمكنك إضافة تنبيه للمستخدم هنا إن رغبت
+            // print("Failed to import file:", error)
+        }
     }
     private func addImageAttachment(data: Data, suggestedName: String) {
         let fm = FileManager.default

@@ -1,0 +1,227 @@
+diff --git a/TasksCall19092025/ContentView.swift b/TasksCall19092025/ContentView.swift
+--- a/TasksCall19092025/ContentView.swift
++++ b/TasksCall19092025/ContentView.swift
+@@ -1,9 +1,9 @@
+ import SwiftUI
+ import Combine
+ import UserNotifications
+ import PhotosUI
+ import VisionKit
+ import UniformTypeIdentifiers
+ import QuickLook
+@@
+-struct TaskStore {
++struct TaskStore {
+     static let jsonFilename = "tasks.json"
+     static let attachmentsFolder = "Attachments"
+@@
+-    /// نسخ ملف خارجي إلى Attachments
+-    static func copyIn(_ source: URL) -> URL? {
+-        let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
+-        do {
+-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
+-            try FileManager.default.copyItem(at: source, to: dest)
+-            return dest
+-        } catch { print("Copy file error:", error); return nil }
+-    }
++    /// نسخ ملف خارجي إلى Attachments (يدعم Security-Scoped + مسار احتياطي)
++    static func copyIn(_ source: URL) -> URL? {
++        let scoped = source.startAccessingSecurityScopedResource()
++        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
++        let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
++        do {
++            if FileManager.default.fileExists(atPath: dest.path) {
++                try FileManager.default.removeItem(at: dest)
++            }
++            do {
++                try FileManager.default.copyItem(at: source, to: dest)
++                return dest
++            } catch {
++                // احتياطي: قراءة البيانات ثم كتابتها محليًا (لبعض مزوّدي Files)
++                let data = try Data(contentsOf: source)
++                try data.write(to: dest, options: .atomic)
++                return dest
++            }
++        } catch {
++            print("Copy file error:", error)
++            return nil
++        }
++    }
+ }
+ 
+@@
+ struct TaskDetailView: View {
+     @Binding var task: TaskItem
+     @Binding var allTasks: [TaskItem]
+     @ObservedObject private var notifier = NotificationManager.shared
+@@
+     @State private var attachmentToRename: AttachmentItem?
+     @State private var newAttachmentName: String = ""
++    // معاينة المرفقات من مستوى أعلى لتجنّب تعارض العروض داخل Form
++    @State private var previewURLsExternal: [URL] = []
++    @State private var showPreviewExternal = false
+@@
+-            Section {
+-                AttachmentListView(
+-                    attachments: $task.attachments,
+-                    onRename: { att in
+-                        attachmentToRename = att
+-                        newAttachmentName = att.name
+-                        showRenameAlert = true
+-                    }
+-                )
++            Section {
++                AttachmentListView(
++                    attachments: $task.attachments,
++                    onRename: { att in
++                        attachmentToRename = att
++                        newAttachmentName = att.name
++                        showRenameAlert = true
++                    },
++                    onOpen: { url in
++                        previewURLsExternal = [url]
++                        showPreviewExternal = true
++                    }
++                )
+                 .alert("إعادة تسمية المرفق", isPresented: $showRenameAlert) {
+                     TextField("اسم المرفق", text: $newAttachmentName)
+                     Button("حفظ") {
+@@
+         .toolbar {
+             ToolbarItemGroup(placement: .topBarTrailing) {
+                 if !notifier.permissionGranted {
+                     Button("تفعيل الإشعارات") { notifier.requestAuthorization() }
+                 }
+             }
+         }
++        // QuickLook من مستوى الـ DetailView
++        .sheet(isPresented: $showPreviewExternal) {
++            QLPreview(urls: previewURLsExternal)
++        }
+     }
+ }
+ 
+@@
+-struct AttachmentListView: View {
++struct AttachmentListView: View {
+     @Binding var attachments: [AttachmentItem]
+-    var onRename: (AttachmentItem) -> Void
++    var onRename: (AttachmentItem) -> Void
++    var onOpen: (URL) -> Void
+ 
+     @State private var showImagePicker = false
+     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+     @State private var showDocPicker = false
+     @State private var showScanner = false
+-
+-    // Preview
+-    @State private var previewURLs: [URL] = []
+-    @State private var showPreview = false
++    // أزلنا المعاينة المحلية — سنفتح من الأب
+@@
+             } else {
+                 ForEach(attachments) { att in
+                     HStack {
+                         Image(systemName: att.kind.systemImage)
+                         VStack(alignment: .trailing) {
+@@
+                         Spacer()
+                         Menu {
+                             Button { onRename(att) } label: { Label("إعادة تسمية", systemImage: "pencil") }
+                             Button(role: .destructive) { delete(att) } label: { Label("حذف", systemImage: "trash") }
+                             Divider()
+                             if let url = att.fileURL {
+                                 ShareLink(item: url) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+-                                Button {
+-                                    previewURLs = [url]
+-                                    showPreview = true
+-                                } label: { Label("معاينة", systemImage: "eye") }
++                                Button { onOpen(url) } label: { Label("معاينة", systemImage: "eye") }
+                             } else {
+                                 Button { } label: { Label("مشاركة", systemImage: "square.and.arrow.up") }.disabled(true)
+                                 Button { } label: { Label("معاينة", systemImage: "eye") }.disabled(true)
+                             }
+                         } label: { Image(systemName: "ellipsis.circle") }
+                     }
++                    .contentShape(Rectangle())
++                    .onTapGesture {
++                        if let url = att.fileURL { onOpen(url) }
++                    }
+                     .padding(.vertical, 4)
+                 }
+             }
+@@
+-            // Photos picker
+-            .photosPicker(isPresented: $showImagePicker, selection: $selectedPhotoItems, maxSelectionCount: 1, matching: .images)
+-            .onChange(of: selectedPhotoItems) { _, newValue in
+-                guard let item = newValue.first else { return }
+-                Task {
+-                    if let data = try? await item.loadTransferable(type: Data.self) {
+-                        let suggested = (await item.itemIdentifier)?.split(separator: "/").last.map(String.init) ?? "صورة.jpg"
+-                        if let url = TaskStore.saveData(data, preferredName: suggested) {
+-                            attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
+-                        }
+-                    }
+-                    selectedPhotoItems.removeAll()
+-                }
+-            }
++            // Photos picker (يدعم URL/Data/UIImage)
++            .photosPicker(
++                isPresented: $showImagePicker,
++                selection: $selectedPhotoItems,
++                maxSelectionCount: 1,
++                matching: .images
++            )
++            .onChange(of: selectedPhotoItems) { _, newValue in
++                guard let item = newValue.first else { return }
++                Task {
++                    // (أ) URL مباشر من Photos
++                    if let photoURL = try? await item.loadTransferable(type: URL.self),
++                       let saved = TaskStore.copyIn(photoURL) {
++                        attachments.append(AttachmentItem(name: saved.lastPathComponent, kind: .image, fileURL: saved))
++                        selectedPhotoItems.removeAll()
++                        return
++                    }
++                    // (ب) Data مباشرة
++                    if let data = try? await item.loadTransferable(type: Data.self),
++                       let saved = TaskStore.saveData(data, preferredName: "صورة.jpg") {
++                        attachments.append(AttachmentItem(name: saved.lastPathComponent, kind: .image, fileURL: saved))
++                        selectedPhotoItems.removeAll()
++                        return
++                    }
++                    // (ج) UIImage → JPEG
++                    if let image = try? await item.loadTransferable(type: UIImage.self),
++                       let data = image.jpegData(compressionQuality: 0.9),
++                       let saved = TaskStore.saveData(data, preferredName: "صورة.jpg") {
++                        attachments.append(AttachmentItem(name: saved.lastPathComponent, kind: .image, fileURL: saved))
++                    }
++                    selectedPhotoItems.removeAll()
++                }
++            }
+@@
+-            // Files
+-            .sheet(isPresented: $showDocPicker) {
+-                DocPicker { urls in
+-                    if let url = urls.first, let dest = TaskStore.copyIn(url) {
+-                        attachments.append(AttachmentItem(name: dest.lastPathComponent, kind: .document, fileURL: dest))
+-                    }
+-                }
+-            }
++            // Files (Security-Scoped + نسخ احتياطي)
++            .sheet(isPresented: $showDocPicker) {
++                DocPicker { urls in
++                    guard let picked = urls.first else { return }
++                    let ok = picked.startAccessingSecurityScopedResource()
++                    defer { if ok { picked.stopAccessingSecurityScopedResource() } }
++                    if let dest = TaskStore.copyIn(picked) {
++                        attachments.append(AttachmentItem(name: dest.lastPathComponent, kind: .document, fileURL: dest))
++                    }
++                }
++            }
+@@
+-        }
+-        .sheet(isPresented: $showPreview) { QLPreview(urls: previewURLs) }
++        }
+     }
+
+
