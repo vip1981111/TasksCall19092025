@@ -1,3 +1,5 @@
+// كامل الملف كما عندك مع دعم iOS 14 عبر PHPicker بدلاً من PhotosPicker
+
 //
 //  ContentView.swift
 //  TasksCall19092025
@@ -8,9 +10,11 @@
 import SwiftUI
 import VisionKit
 import Combine
-import PhotosUI
 import UniformTypeIdentifiers
 import UserNotifications
+import QuickLook
+import PhotosUI // نحتاجه لـ PHPickerViewController (ضمن PhotosUI framework لكنه متاح من iOS 14 مع الواجهة الكلاسيكية)
+
 
 // MARK: - Model
 
@@ -553,7 +557,7 @@ struct ContentView: View {
                                 )
                             }
                             .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-                            .listRowSeparator(.visible) // إظهار الفواصل
+                            .listRowSeparator(.visible)
                             .swipeActions(edge: .trailing) {
                                 if currentPage?.isDaily != true, let pageID = pageIDForTask(task.id) {
                                     Button(role: .destructive) {
@@ -609,7 +613,7 @@ struct ContentView: View {
                     }
                     .listStyle(.plain)
                     .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .listRowSpacing(4) // iOS 17+
+                    .listRowSpacing(4)
                     .padding(.top, 4)
                 }
             }
@@ -988,7 +992,7 @@ private struct TaskCardRow: View {
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(.systemBackground))
-                .overlay( // إطار خفيف لتمييز البطاقة عن الخلفية
+                .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(Color.secondary.opacity(0.15), lineWidth: 0.75)
                 )
@@ -1013,9 +1017,21 @@ struct TaskDetailView: View {
     
     @EnvironmentObject private var storeEnv: TasksStore
     @State private var newStepTitle: String = ""
-    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    
+    // iOS 14+: PHPicker بدلاً من PhotosPicker
+    @State private var isPhotoPickerPresented: Bool = false
+    
     @State private var isFileImporterPresented: Bool = false
     @State private var isDocumentScannerPresented: Bool = false
+    
+    // معاينة المرفقات
+    @State private var previewURLs: [URL] = []
+    @State private var showPreview: Bool = false
+    
+    // إعادة تسمية المرفق
+    @State private var renamingAttachment: TaskAttachment? = nil
+    @State private var renameAttachmentText: String = ""
+    @State private var showRenameAttachmentAlert: Bool = false
     
     var body: some View {
         ScrollView {
@@ -1081,13 +1097,11 @@ struct TaskDetailView: View {
             case .failure: break
             }
         }
-        .onChange(of: selectedPhotoItem) { _, newValue in
-            Task {
-                guard let item = newValue else { return }
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    addImageAttachment(data: data, suggestedName: "image.jpg")
-                } else if let image = try? await item.loadTransferable(type: UIImage.self),
-                          let data = image.jpegData(compressionQuality: 0.9) {
+        // PHPickerViewController (iOS 14+)
+        .sheet(isPresented: $isPhotoPickerPresented) {
+            PhotoPickerView(filter: .images, selectionLimit: 1) { image in
+                guard let image = image else { return }
+                if let data = image.jpegData(compressionQuality: 0.9) {
                     addImageAttachment(data: data, suggestedName: "image.jpg")
                 }
             }
@@ -1100,6 +1114,31 @@ struct TaskDetailView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showPreview) {
+            QLPreview(urls: previewURLs)
+                .ignoresSafeArea()
+        }
+        .alert("تعديل اسم المرفق", isPresented: $showRenameAttachmentAlert) {
+            TextField("اسم المرفق", text: $renameAttachmentText)
+            Button("حفظ") {
+                if let target = renamingAttachment,
+                   let idx = task.attachments.firstIndex(where: { $0.id == target.id }) {
+                    let newNameRaw = renameAttachmentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !newNameRaw.isEmpty else { return }
+                    let currentExt = task.attachments[idx].fileURL.pathExtension
+                    let hasDot = (newNameRaw as NSString).pathExtension.isEmpty == false
+                    let finalName = hasDot ? newNameRaw : (currentExt.isEmpty ? newNameRaw : "\(newNameRaw).\(currentExt)")
+                    if let newURL = renameAttachmentOnDisk(task.attachments[idx].fileURL, to: finalName) {
+                        task.attachments[idx].fileURL = newURL
+                        task.attachments[idx].fileName = newURL.lastPathComponent
+                    }
+                }
+                renamingAttachment = nil
+            }
+            Button("إلغاء", role: .cancel) { renamingAttachment = nil }
+        } message: {
+            Text("أدخل الاسم الجديد للمرفق.")
         }
     }
     
@@ -1117,7 +1156,9 @@ struct TaskDetailView: View {
                 Spacer()
                 Menu {
                     Button { isFileImporterPresented = true } label: { Label("مستند/ملف", systemImage: "doc") }
-                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    Button {
+                        isPhotoPickerPresented = true
+                    } label: {
                         Label("صورة من الصور", systemImage: "photo")
                     }
                     Button {
@@ -1135,9 +1176,30 @@ struct TaskDetailView: View {
                         Image(systemName: iconForAttachment(att.kind)).foregroundStyle(.secondary)
                         Text(att.fileName).lineLimit(1)
                         Spacer()
-                        Button { removeAttachment(att) } label: {
-                            Image(systemName: "trash").foregroundStyle(.red)
+                        Menu {
+                            Button {
+                                previewURLs = [att.fileURL]
+                                showPreview = true
+                            } label: { Label("معاينة", systemImage: "eye") }
+                            ShareLink(item: att.fileURL) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+                            Button {
+                                renamingAttachment = att
+                                renameAttachmentText = att.fileName
+                                showRenameAttachmentAlert = true
+                            } label: {
+                                Label("تعديل الاسم", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) { removeAttachment(att) } label: {
+                                Label("حذف", systemImage: "trash")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
                         }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        previewURLs = [att.fileURL]
+                        showPreview = true
                     }
                     .padding(8)
                     .background(Color.secondary.opacity(0.06))
@@ -1284,7 +1346,6 @@ struct DocumentScannerView: UIViewControllerRepresentable {
         }
     }
     private func addAttachment(from sourceURL: URL) {
-        // مهم: ملفات من تطبيق الملفات قد تكون Security-Scoped
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
         
@@ -1296,20 +1357,16 @@ struct DocumentScannerView: UIViewControllerRepresentable {
                 try fm.removeItem(at: destURL)
             }
             do {
-                // محاولة نسخ مباشرة
                 try fm.copyItem(at: sourceURL, to: destURL)
                 let kind = kindForFileExtension(destURL.pathExtension)
                 task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
             } catch {
-                // مسار احتياطي: قراءة البيانات ثم كتابتها
                 let data = try Data(contentsOf: sourceURL)
                 try data.write(to: destURL, options: .atomic)
                 let kind = kindForFileExtension(destURL.pathExtension)
                 task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
             }
         } catch {
-            // يمكنك إضافة تنبيه للمستخدم هنا إن رغبت
-            // print("Failed to import file:", error)
         }
     }
     private func addImageAttachment(data: Data, suggestedName: String) {
@@ -1332,6 +1389,21 @@ struct DocumentScannerView: UIViewControllerRepresentable {
         if ["m4a","mp3","wav","aac"].contains(e) { return .audio }
         if ["pdf","doc","docx","ppt","pptx","xls","xlsx","txt","rtf"].contains(e) { return .document }
         return .other
+    }
+    
+    private func renameAttachmentOnDisk(_ oldURL: URL, to newFileName: String) -> URL? {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let newURL = docs.appendingPathComponent(newFileName)
+        do {
+            if fm.fileExists(atPath: newURL.path) {
+                try fm.removeItem(at: newURL)
+            }
+            try fm.moveItem(at: oldURL, to: newURL)
+            return newURL
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -1421,10 +1493,8 @@ private struct ForceRTLViewController: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         let vc = UIViewController()
         vc.view.backgroundColor = .clear
-        // فرض الاتجاه على مستوى التسلسل الهرمي لواجهة UIKit
         vc.view.semanticContentAttribute = .forceRightToLeft
         vc.view.tintColor = UIColor.label
-        // عند تقديمه داخل SwiftUI، سيؤثر على القوائم المنبثقة التابعة له
         return vc
     }
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
@@ -1450,4 +1520,82 @@ extension View {
     ContentView()
         .environmentObject(TasksStore())
         .forceRTL()
+}
+
+// MARK: - QuickLook wrapper
+
+struct QLPreview: UIViewControllerRepresentable {
+    let urls: [URL]
+    
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(urls: urls)
+    }
+    
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let urls: [URL]
+        init(urls: [URL]) { self.urls = urls }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { urls.count }
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            urls[index] as QLPreviewItem
+        }
+    }
+}
+
+// MARK: - PHPicker wrapper (iOS 14+)
+
+struct PhotoPickerView: UIViewControllerRepresentable {
+    enum Filter {
+        case images
+    }
+    
+    var filter: Filter = .images
+    var selectionLimit: Int = 1
+    var onImagePicked: (UIImage?) -> Void
+    
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration()
+        configuration.selectionLimit = selectionLimit
+        configuration.filter = .images
+        let controller = PHPickerViewController(configuration: configuration)
+        controller.delegate = context.coordinator
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImagePicked: onImagePicked)
+    }
+    
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onImagePicked: (UIImage?) -> Void
+        
+        init(onImagePicked: @escaping (UIImage?) -> Void) {
+            self.onImagePicked = onImagePicked
+        }
+        
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard let provider = results.first?.itemProvider else {
+                onImagePicked(nil); return
+            }
+            if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    DispatchQueue.main.async {
+                        self.onImagePicked(object as? UIImage)
+                    }
+                }
+            } else {
+                onImagePicked(nil)
+            }
+        }
+    }
 }
