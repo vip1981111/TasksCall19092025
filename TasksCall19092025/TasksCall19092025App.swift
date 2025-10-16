@@ -15,7 +15,9 @@ struct TasksCall19092025App: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                // إبقاء RTL في بيئة SwiftUI فقط
                 .environment(\.layoutDirection, .rightToLeft)
+                // لم نعد نفرض RTL على UIWindow لتجنب تحذيرات AutoLayout من UIKit
         }
     }
 }

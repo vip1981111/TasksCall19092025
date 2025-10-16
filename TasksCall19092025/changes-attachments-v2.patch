@@ -1,0 +1,263 @@
+diff --git a/TasksCall19092025/ContentView.swift b/TasksCall19092025/ContentView.swift
+--- a/TasksCall19092025/ContentView.swift
++++ b/TasksCall19092025/ContentView.swift
+@@ -95,19 +95,37 @@ struct TaskStore {
+-    /// نسخ ملف خارجي إلى Attachments
+-    static func copyIn(_ source: URL) -> URL? {
+-        let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
+-        do {
+-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
+-            try FileManager.default.copyItem(at: source, to: dest)
+-            return dest
+-        } catch { print("Copy file error:", error); return nil }
+-    }
++    /// نسخ ملف خارجي إلى Attachments (يدعم Security-Scoped + مسار احتياطي للنسخ)
++    static func copyIn(_ source: URL) -> URL? {
++        // ضروري لبعض مزودي الملفات (iCloud/Drive/Files providers)
++        let scoped = source.startAccessingSecurityScopedResource()
++        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
++
++        let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
++        do {
++            if FileManager.default.fileExists(atPath: dest.path) {
++                try FileManager.default.removeItem(at: dest)
++            }
++            // محاولة نسخ مباشرة
++            do {
++                try FileManager.default.copyItem(at: source, to: dest)
++                return dest
++            } catch {
++                // احتياطي: قراءة البيانات ثم كتابتها
++                let data = try Data(contentsOf: source)
++                try data.write(to: dest, options: .atomic)
++                return dest
++            }
++        } catch {
++            print("Copy file error:", error)
++            return nil
++        }
++    }
+ }
+ 
+@@ -423,6 +441,10 @@ struct TaskDetailView: View {
+     @State private var attachmentToRename: AttachmentItem?
+     @State private var newAttachmentName: String = ""
+ 
++    // معاينة المرفقات من مستوى أعلى (خارج الـForm) لتفادي تعارض العروض
++    @State private var previewURLsExternal: [URL] = []
++    @State private var showPreviewExternal = false
++
+     var body: some View {
+         Form {
+             Section("المهمة") {
+@@ -460,11 +482,20 @@ struct TaskDetailView: View {
+             Section {
+                 AttachmentListView(
+                     attachments: $task.attachments,
+                     onRename: { att in
+                         attachmentToRename = att
+                         newAttachmentName = att.name
+                         showRenameAlert = true
+-                    }
++                    },
++                    onOpen: { url in
++                        previewURLsExternal = [url]
++                        showPreviewExternal = true
++                    }
+                 )
+                 .alert("إعادة تسمية المرفق", isPresented: $showRenameAlert) {
+                     TextField("اسم المرفق", text: $newAttachmentName)
+                     Button("حفظ") {
+                         if let att = attachmentToRename,
+                            let idx = task.attachments.firstIndex(where: { $0.id == att.id }) {
+                             task.attachments[idx].name = newAttachmentName.trimmingCharacters(in: .whitespacesAndNewlines)
+                         }
+                         attachmentToRename = nil
+                     }
+                     Button("إلغاء", role: .cancel) { attachmentToRename = nil }
+                 } message: { Text("اكتب الاسم الجديد للمرفق.") }
+             } header: { Text("المرفقات") }
+               footer: { Text("معاينة/مشاركة/إعادة تسمية/حذف — التنفيذ الفعلي مفعّل.") }
+         }
+         .navigationTitle("تفاصيل المهمة")
+         .toolbar {
+             ToolbarItemGroup(placement: .topBarTrailing) {
+                 if !notifier.permissionGranted {
+                     Button("تفعيل الإشعارات") { notifier.requestAuthorization() }
+                 }
+             }
+         }
++        // معاينة QuickLook من مستوى الـDetailView وليس من داخل صف في الـForm
++        .sheet(isPresented: $showPreviewExternal) {
++            QLPreview(urls: previewURLsExternal)
++        }
+     }
+ }
+ 
+@@ -560,14 +591,15 @@ struct AttachmentListView: View {
+-struct AttachmentListView: View {
++struct AttachmentListView: View {
+     @Binding var attachments: [AttachmentItem]
+-    var onRename: (AttachmentItem) -> Void
++    var onRename: (AttachmentItem) -> Void
++    var onOpen: (URL) -> Void
+ 
+     @State private var showImagePicker = false
+     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+     @State private var showDocPicker = false
+     @State private var showScanner = false
+ 
+-    // Preview
+-    @State private var previewURLs: [URL] = []
+-    @State private var showPreview = false
++    // أزلنا معاينة محلية، سنفتح من الأب (TaskDetailView)
+ 
+     var body: some View {
+         VStack(alignment: .leading) {
+             if attachments.isEmpty {
+                 ContentUnavailableView("لا توجد مرفقات", systemImage: "paperclip", description: Text("أضف صورًا أو مستندات أو مسحًا ضوئيًا"))
+                     .frame(maxWidth: .infinity)
+             } else {
+                 ForEach(attachments) { att in
+                     HStack {
+                         Image(systemName: att.kind.systemImage)
+                         VStack(alignment: .trailing) {
+                             Text(att.name)
+                                 .frame(maxWidth: .infinity, alignment: .trailing)
+                             Text(att.addedAt, style: .date)
+                                 .font(.caption)
+                                 .foregroundStyle(.secondary)
+                                 .frame(maxWidth: .infinity, alignment: .trailing)
+                         }
+                         Spacer()
+                         Menu {
+                             Button { onRename(att) } label: { Label("إعادة تسمية", systemImage: "pencil") }
+                             Button(role: .destructive) { delete(att) } label: { Label("حذف", systemImage: "trash") }
+                             Divider()
+                             if let url = att.fileURL {
+                                 ShareLink(item: url) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+-                                Button {
+-                                    previewURLs = [url]
+-                                    showPreview = true
+-                                } label: { Label("معاينة", systemImage: "eye") }
++                                Button { onOpen(url) } label: { Label("معاينة", systemImage: "eye") }
+                             } else {
+                                 Button { } label: { Label("مشاركة", systemImage: "square.and.arrow.up") }.disabled(true)
+                                 Button { } label: { Label("معاينة", systemImage: "eye") }.disabled(true)
+                             }
+                         } label: { Image(systemName: "ellipsis.circle") }
+                     }
++                    .contentShape(Rectangle())
++                    .onTapGesture {
++                        if let url = att.fileURL { onOpen(url) }
++                    }
+                     .padding(.vertical, 4)
+                 }
+             }
+ 
+             Menu {
+                 Button { showImagePicker = true } label: { Label("إرفاق صورة", systemImage: "photo") }
+                 Button { showDocPicker = true } label: { Label("إرفاق مستند", systemImage: "doc") }
+                 Button { showScanner = true } label: { Label("مسح مستند", systemImage: "doc.viewfinder") }
+             } label: {
+                 Label("إضافة مرفق", systemImage: "paperclip.circle.fill")
+                     .frame(maxWidth: .infinity, alignment: .leading)
+             }
+             .padding(.top, 6)
+ 
+-            // Photos picker
+-            .photosPicker(isPresented: $showImagePicker, selection: $selectedPhotoItems, maxSelectionCount: 1, matching: .images)
+-            .onChange(of: selectedPhotoItems) { _, newValue in
+-                guard let item = newValue.first else { return }
+-                Task {
+-                    if let data = try? await item.loadTransferable(type: Data.self) {
+-                        let suggested = (await item.itemIdentifier)?.split(separator: "/").last.map(String.init) ?? "صورة.jpg"
+-                        if let url = TaskStore.saveData(data, preferredName: suggested) {
+-                            attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
+-                        }
+-                    }
+-                    selectedPhotoItems.removeAll()
+-                }
+-            }
++            // Photos picker (مع مسار احتياطي UIImage -> JPEG)
++            .photosPicker(
++                isPresented: $showImagePicker,
++                selection: $selectedPhotoItems,
++                maxSelectionCount: 1,
++                matching: .images
++            )
++            .onChange(of: selectedPhotoItems) { _, newValue in
++                guard let item = newValue.first else { return }
++                Task {
++                    if let data = try? await item.loadTransferable(type: Data.self) {
++                        let suggested = (await item.itemIdentifier)?
++                            .split(separator: "/").last.map(String.init) ?? "صورة.jpg"
++                        if let url = TaskStore.saveData(data, preferredName: suggested) {
++                            attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
++                            selectedPhotoItems.removeAll()
++                            return
++                        }
++                    }
++                    if let image = try? await item.loadTransferable(type: UIImage.self),
++                       let data = image.jpegData(compressionQuality: 0.9) {
++                        let suggested = (await item.itemIdentifier)?
++                            .split(separator: "/").last.map(String.init) ?? "صورة.jpg"
++                        if let url = TaskStore.saveData(data, preferredName: suggested) {
++                            attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
++                        }
++                    }
++                    selectedPhotoItems.removeAll()
++                }
++            }
+ 
+             // Files
+             .sheet(isPresented: $showDocPicker) {
+                 DocPicker { urls in
+-                    if let url = urls.first, let dest = TaskStore.copyIn(url) {
+-                        attachments.append(AttachmentItem(name: dest.lastPathComponent, kind: .document, fileURL: dest))
+-                    }
++                    guard let picked = urls.first else { return }
++                    // تأمين Security-Scoped قبل النسخ (بعض المزودين يحتاجونه)
++                    let ok = picked.startAccessingSecurityScopedResource()
++                    defer { if ok { picked.stopAccessingSecurityScopedResource() } }
++                    if let dest = TaskStore.copyIn(picked) {
++                        attachments.append(
++                            AttachmentItem(
++                                name: dest.lastPathComponent,
++                                kind: .document,
++                                fileURL: dest
++                            )
++                        )
++                    }
+                 }
+             }
+ 
+             // Scanner
+             .fullScreenCover(isPresented: $showScanner) {
+                 DocumentScannerView {  images in
+                     let start = attachments.filter { $0.kind == .scan }.count + 1
+                     for (idx, img) in images.enumerated() {
+                         if let data = img.jpegData(compressionQuality: 0.9),
+                            let saved = TaskStore.saveData(data, preferredName: "مسح-\(start+idx).jpg") {
+                             attachments.append(AttachmentItem(name: saved.lastPathComponent, kind: .scan, fileURL: saved))
+                          }
+                 .ignoresSafeArea()
+             }
+                 }
+             }
+-        }
+-        .sheet(isPresented: $showPreview) { QLPreview(urls: previewURLs) }
++        }
+     }
+ 
+     private func delete(_ att: AttachmentItem) {
+         if let idx = attachments.firstIndex(where: { $0.id == att.id }) {
+             if let url = attachments[idx].fileURL {
+                 try? FileManager.default.removeItem(at: url)
+             }
+             attachments.remove(at: idx)
+         }
+     }
+ }
+
+

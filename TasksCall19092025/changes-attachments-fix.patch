@@ -1,0 +1,132 @@
+diff --git a/TasksCall19092025/ContentView.swift b/TasksCall19092025/ContentView.swift
+index 9b9b9b9..abababa 100644
+--- a/TasksCall19092025/ContentView.swift
++++ b/TasksCall19092025/ContentView.swift
+@@ -112,20 +112,34 @@ struct TaskStore {
+     /// نسخ ملف خارجي إلى Attachments
+/// نسخ ملف خارجي إلى Attachments (يدعم Security-Scoped + مسار احتياطي)
+static func copyIn(_ source: URL) -> URL? {
+    // دعم Security-Scoped URLs (مهم لملفات iCloud/Drive وغيرها)
+    let scoped = source.startAccessingSecurityScopedResource()
+    defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+
+    let dest = uniqueURL(source.lastPathComponent, in: attachmentsDir)
+    do {
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        // محاولة نسخ مباشرة
+        do {
+            try FileManager.default.copyItem(at: source, to: dest)
+            return dest
+        } catch {
+            // احتياطي: قراءة البيانات ثم كتابتها محليًا
+            let data = try Data(contentsOf: source)
+            try data.write(to: dest, options: .atomic)
+            return dest
+        }
+    } catch {
+        print("Copy file error:", error)
+        return nil
+    }
+}
+@@ -566,15 +580,37 @@ struct AttachmentListView: View {
+             // Photos picker
+-           .photosPicker(
+    isPresented: $showImagePicker,
+    selection: $selectedPhotoItems,
+    maxSelectionCount: 1,
+    matching: .images
+)
+.onChange(of: selectedPhotoItems) { _, newValue in
+    guard let item = newValue.first else { return }
+    Task {
+        // 1) نحاول Data مباشرة
+        if let data = try? await item.loadTransferable(type: Data.self) {
+            let suggested =
+                (await item.itemIdentifier)?
+                .split(separator: "/").last.map(String.init) ?? "صورة.jpg"
+            if let url = TaskStore.saveData(data, preferredName: suggested) {
+                attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
+                selectedPhotoItems.removeAll()
+                return
+            }
+        }
+        // 2) احتياطي: UIImage -> JPEG
+        if let image = try? await item.loadTransferable(type: UIImage.self),
+           let data = image.jpegData(compressionQuality: 0.9) {
+            let suggested =
+                (await item.itemIdentifier)?
+                .split(separator: "/").last.map(String.init) ?? "صورة.jpg"
+            if let url = TaskStore.saveData(data, preferredName: suggested) {
+                attachments.append(AttachmentItem(name: url.lastPathComponent, kind: .image, fileURL: url))
+            }
+        }
+        selectedPhotoItems.removeAll()
+    }
+}
++            }
+@@ -592,10 +628,21 @@ struct AttachmentListView: View {
+             // Files
+            .sheet(isPresented: $showDocPicker) {
+    DocPicker { urls in
+        guard let picked = urls.first else { return }
+        // تأمين Security-Scoped قبل النسخ (احتياط زائد)
+        let ok = picked.startAccessingSecurityScopedResource()
+        defer { if ok { picked.stopAccessingSecurityScopedResource() } }
+        if let dest = TaskStore.copyIn(picked) {
+            attachments.append(
+                AttachmentItem(
+                    name: dest.lastPathComponent,
+                    kind: .document,
+                    fileURL: dest
+                )
+            )
+        }
+    }
+}
+@@ -548,17 +596,33 @@ struct AttachmentListView: View {
+             if attachments.isEmpty {
+                 ContentUnavailableView("لا توجد مرفقات", systemImage: "paperclip", description: Text("أضف صورًا أو مستندات أو مسحًا ضوئيًا"))
+                     .frame(maxWidth: .infinity)
+             } else {
+                 ForEach(attachments) { att in
+-                    HStack {
++                    HStack {
+                         Image(systemName: att.kind.systemImage)
+                         VStack(alignment: .trailing) {
+                             Text(att.name)
+                                 .frame(maxWidth: .infinity, alignment: .trailing)
+                             Text(att.addedAt, style: .date)
+                                 .font(.caption)
+                                 .foregroundStyle(.secondary)
+                                 .frame(maxWidth: .infinity, alignment: .trailing)
+                         }
+                         Spacer()
+                         Menu {
+                             Button { onRename(att) } label: { Label("إعادة تسمية", systemImage: "pencil") }
+                             Button(role: .destructive) { delete(att) } label: { Label("حذف", systemImage: "trash") }
+                             Divider()
+                             if let url = att.fileURL {
+                                 ShareLink(item: url) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+                                 Button {
+                                     previewURLs = [url]
+                                     showPreview = true
+                                 } label: { Label("معاينة", systemImage: "eye") }
+                             } else {
+                                 Button { } label: { Label("مشاركة", systemImage: "square.and.arrow.up") }.disabled(true)
+                                 Button { } label: { Label("معاينة", systemImage: "eye") }.disabled(true)
+                             }
+                         } label: { Image(systemName: "ellipsis.circle") }
+                     }
++                    // فتح المعاينة مباشرةً عند الضغط على الصف
++                    .contentShape(Rectangle())
++                    .onTapGesture {
++                        if let url = att.fileURL {
++                            previewURLs = [url]
++                            showPreview = true
++                        }
++                    }
+                     .padding(.vertical, 4)
+                 }
+             }
