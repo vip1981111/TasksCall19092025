@@ -1,5 +1,4 @@
 // كامل الملف كما عندك مع دعم iOS 14 عبر PHPicker بدلاً من PhotosPicker
-
 //
 //  ContentView.swift
 //  TasksCall19092025
@@ -97,7 +96,7 @@ struct TaskAttachment: Identifiable, Hashable, Codable {
     
     init(id: UUID = UUID(), fileName: String, fileURL: URL, kind: AttachmentKind) {
         self.id = id
-        self.fileName = fileName
+               self.fileName = fileName
         self.fileURL = fileURL
         self.kind = kind
     }
@@ -111,6 +110,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
     
     var createdAt: Date
     var recurrence: TaskRecurrence
+    var dueDate: Date? // تاريخ/وقت التذكير للمهمة
     var steps: [TaskStep]
     var notes: String
     var attachments: [TaskAttachment]
@@ -125,6 +125,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
         priority: TaskPriority = .medium,
         createdAt: Date = Date(),
         recurrence: TaskRecurrence = .none,
+        dueDate: Date? = nil,
         steps: [TaskStep] = [],
         notes: String = "",
         attachments: [TaskAttachment] = [],
@@ -137,6 +138,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
         self.priority = priority
         self.createdAt = createdAt
         self.recurrence = recurrence
+        self.dueDate = dueDate
         self.steps = steps
         self.notes = notes
         self.attachments = attachments
@@ -285,11 +287,15 @@ final class TasksStore: ObservableObject {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         withAnimation { pages[i].tasks.removeAll { $0.id == id } }
         cancelDailyNotification(taskID: id)
+        cancelTaskNotification(taskID: id)
     }
     func deleteTasks(in pageID: UUID, ids: Set<UUID>) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         withAnimation { pages[i].tasks.removeAll { ids.contains($0.id) } }
-        ids.forEach { cancelDailyNotification(taskID: $0) }
+        ids.forEach {
+            cancelDailyNotification(taskID: $0)
+            cancelTaskNotification(taskID: $0)
+        }
     }
     func markTasks(in pageID: UUID, ids: Set<UUID>, done: Bool) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
@@ -350,6 +356,8 @@ final class TasksStore: ObservableObject {
     }
     
     private func notificationIdentifier(for taskID: UUID) -> String { "daily-\(taskID.uuidString)" }
+    private func taskNotificationIdentifier(for taskID: UUID) -> String { "task-\(taskID.uuidString)" }
+    
     func requestNotificationAuthorizationIfNeeded() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             if settings.authorizationStatus == .notDetermined {
@@ -394,6 +402,61 @@ final class TasksStore: ObservableObject {
         content.body = "هذا إشعار تجريبي للتأكد من صلاحيات الإشعارات."
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "test-\(UUID().uuidString)", content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))) { _ in }
+    }
+    
+    // MARK: - إشعار مخصص لكل مهمة حسب التكرار/التاريخ
+    
+    func scheduleTaskNotification(for task: TaskItem) {
+        guard notificationsEnabled else { return }
+        if task.recurrence == .none, task.dueDate == nil {
+            cancelTaskNotification(taskID: task.id)
+            return
+        }
+        guard let date = task.dueDate ?? Date() as Date? else { return }
+        guard let dc = triggerComponents(for: task.recurrence, dueDate: date) else { return }
+        
+        let content = UNMutableNotificationContent()
+        content.title = "تذكير مهمة"
+        content.body = task.title
+        content.sound = .default
+        
+        let repeats = task.recurrence != .none
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: repeats)
+        
+        cancelTaskNotification(taskID: task.id)
+        let req = UNNotificationRequest(identifier: taskNotificationIdentifier(for: task.id), content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(req) { _ in }
+    }
+    
+    func cancelTaskNotification(taskID: UUID) {
+        let id = taskNotificationIdentifier(for: taskID)
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [id])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
+    }
+    
+    private func triggerComponents(for recurrence: TaskRecurrence, dueDate: Date) -> DateComponents? {
+        let cal = Calendar.current
+        switch recurrence {
+        case .none:
+            var c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
+            if c.year == nil || c.month == nil || c.day == nil { return nil }
+            return c
+        case .daily:
+            var c = DateComponents()
+            let base = cal.dateComponents([.hour, .minute], from: dueDate)
+            c.hour = base.hour; c.minute = base.minute
+            return c
+        case .weekly:
+            var c = DateComponents()
+            let base = cal.dateComponents([.weekday, .hour, .minute], from: dueDate)
+            c.weekday = base.weekday; c.hour = base.hour; c.minute = base.minute
+            return c
+        case .monthly:
+            var c = DateComponents()
+            let base = cal.dateComponents([.day, .hour, .minute], from: dueDate)
+            c.day = base.day; c.hour = base.hour; c.minute = base.minute
+            return c
+        }
     }
     
     func exportData() -> URL? {
@@ -1033,6 +1096,128 @@ struct TaskDetailView: View {
     @State private var renameAttachmentText: String = ""
     @State private var showRenameAttachmentAlert: Bool = false
     
+    // تفعيل/تعطيل التذكير
+    private var isReminderOnBinding: Binding<Bool> {
+        Binding<Bool>(
+            get: { task.dueDate != nil },
+            set: { on in
+                if on {
+                    // فعّل التذكير: إن ما فيه موعد محدد اضبط الافتراضي 9:00 صباحًا
+                    if task.dueDate == nil {
+                        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+                        comps.hour = 9; comps.minute = 0
+                        task.dueDate = Calendar.current.date(from: comps)
+                    }
+                    // إذا النمط "بدون"، خليه يومي كافتراضي (يمكن للمستخدم تغييره بعد ذلك)
+                    if task.recurrence == .none {
+                        task.recurrence = .daily
+                    }
+                    storeEnv.scheduleTaskNotification(for: task)
+                } else {
+                    // إطفاء التذكير يلغي النمط إلى "بدون"
+                    task.dueDate = nil
+                    task.recurrence = .none
+                    storeEnv.cancelTaskNotification(taskID: task.id)
+                }
+            }
+        )
+    }
+    
+    // MARK: - Helpers لاختيار اليوم/التاريخ حسب التكرار
+    
+    private var currentDueDate: Date {
+        task.dueDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
+    }
+    
+    private var selectedHourMinute: (hour: Int, minute: Int) {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: currentDueDate)
+        return (comps.hour ?? 9, comps.minute ?? 0)
+    }
+    
+    private var selectedWeekday: Int {
+        // iOS Calendar: 1 = Sunday ... 7 = Saturday
+        let wd = Calendar.current.component(.weekday, from: currentDueDate)
+        return max(1, min(7, wd))
+    }
+    
+    private var selectedMonthDay: Int {
+        let day = Calendar.current.component(.day, from: currentDueDate)
+        return max(1, min(31, day))
+    }
+    
+    private var arabicWeekdays: [(name: String, value: Int)] {
+        // ترتيب iOS: 1 الأحد ... 7 السبت. سنعرض بالعربية.
+        // يمكنك تغيير بداية الأسبوع إن رغبت.
+        return [
+            ("الأحد", 1),
+            ("الإثنين", 2),
+            ("الثلاثاء", 3),
+            ("الأربعاء", 4),
+            ("الخميس", 5),
+            ("الجمعة", 6),
+            ("السبت", 7)
+        ]
+    }
+    
+    private func setDailyTime(hour: Int, minute: Int) {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        comps.hour = hour; comps.minute = minute
+        task.dueDate = Calendar.current.date(from: comps)
+        storeEnv.scheduleTaskNotification(for: task)
+    }
+    
+    private func setWeekly(weekday: Int, hour: Int, minute: Int) {
+        // اضبط dueDate لأقرب تاريخ يطابق weekday + الوقت
+        var next = Date()
+        var c = Calendar.current.dateComponents([.year, .month, .day, .weekday], from: next)
+        c.hour = hour; c.minute = minute
+        // حوّل اليوم الحالي إلى اليوم المطلوب
+        let currentWeekday = c.weekday ?? Calendar.current.component(.weekday, from: next)
+        let diff = (weekday - currentWeekday + 7) % 7
+        next = Calendar.current.date(byAdding: .day, value: diff, to: next) ?? next
+        var final = Calendar.current.dateComponents([.year, .month, .day], from: next)
+        final.hour = hour; final.minute = minute
+        task.dueDate = Calendar.current.date(from: final)
+        storeEnv.scheduleTaskNotification(for: task)
+    }
+    
+    private func setMonthly(day: Int, hour: Int, minute: Int) {
+        var now = Date()
+        var comps = Calendar.current.dateComponents([.year, .month], from: now)
+        comps.day = max(1, min(31, day))
+        comps.hour = hour; comps.minute = minute
+        // إن كان اليوم غير صالح لهذا الشهر (مثلاً 31 في فبراير)، Calendar قد يعيد nil
+        if let date = Calendar.current.date(from: comps) {
+            task.dueDate = date
+        } else {
+            // جرّب أقرب يوم متاح (30 ثم 29 ثم 28)
+            for d in stride(from: min(day, 31), through: 28, by: -1) {
+                comps.day = d
+                if let date = Calendar.current.date(from: comps) {
+                    task.dueDate = date; break
+                }
+            }
+        }
+        storeEnv.scheduleTaskNotification(for: task)
+    }
+    
+    // الوظيفة المساعدة الجديدة: جدولة الإشعار حسب النمط الحالي
+    private func scheduleNotificationForCurrentRecurrence() {
+        switch task.recurrence {
+        case .daily:
+            let comps = Calendar.current.dateComponents([.hour, .minute], from: currentDueDate)
+            setDailyTime(hour: comps.hour ?? 9, minute: comps.minute ?? 0)
+        case .weekly:
+            let comps = Calendar.current.dateComponents([.weekday, .hour, .minute], from: currentDueDate)
+            setWeekly(weekday: comps.weekday ?? selectedWeekday, hour: comps.hour ?? 9, minute: comps.minute ?? 0)
+        case .monthly:
+            let comps = Calendar.current.dateComponents([.day, .hour, .minute], from: currentDueDate)
+            setMonthly(day: comps.day ?? selectedMonthDay, hour: comps.hour ?? 9, minute: comps.minute ?? 0)
+        case .none:
+            if let date = task.dueDate { storeEnv.scheduleTaskNotification(for: task) }
+        }
+    }
+    
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -1042,29 +1227,28 @@ struct TaskDetailView: View {
                         TextField("موضوع المهمة", text: $task.title)
                             .font(.title3.weight(.semibold))
                             .textInputAutocapitalization(.sentences)
+                            .onChange(of: task.title) { _, _ in
+                                if task.dueDate != nil { storeEnv.scheduleTaskNotification(for: task) }
+                            }
                     }
                     HStack(spacing: 8) {
                         Label(createdAtString, systemImage: "clock")
                             .font(.footnote).foregroundStyle(.secondary)
                         Spacer()
-                        Menu {
-                            Picker("تكرار", selection: $task.recurrence) {
-                                ForEach(TaskRecurrence.allCases) { r in
-                                    Label(r.title, systemImage: r.symbol).tag(r)
-                                }
-                            }
-                        } label: { Label(task.recurrence.title, systemImage: task.recurrence.symbol) }
-                        .font(.footnote)
                     }
-                    Toggle(isOn: $task.isDone) { Text(task.isDone ? "منجزة" : "غير منجزة") }
-                        .onChange(of: task.isDone) { _, _ in
-                            if task.isDone {
-                                for i in task.steps.indices {
-                                    task.steps[i].isDone = true
-                                    task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-                                }
+                    
+                    Toggle(isOn: $task.isDone) {
+                        Text(task.isDone ? "منجزة" : "غير منجزة")
+                    }
+                    .onChange(of: task.isDone) { _, _ in
+                        if task.isDone {
+                            for i in task.steps.indices {
+                                task.steps[i].isDone = true
+                                task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
                             }
                         }
+                    }
+                    
                     Toggle(isOn: Binding(
                         get: { task.isInDaily },
                         set: { newValue in
@@ -1075,6 +1259,187 @@ struct TaskDetailView: View {
                     ) {
                         Label(task.isInDaily ? "مضافة إلى اليومي" : "إضافة إلى اليومي", systemImage: "sun.max")
                             .foregroundStyle(.yellow)
+                    }
+                    
+                    Divider().padding(.vertical, 4)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        // الصف الأول: النمط
+                        HStack(spacing: 10) {
+                            Text("النمط")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Menu {
+                                Picker("النمط", selection: $task.recurrence) {
+                                    ForEach(TaskRecurrence.allCases) { r in
+                                        Label(r.title, systemImage: r.symbol).tag(r)
+                                    }
+                                }
+                            } label: {
+                                Label(task.recurrence.title, systemImage: task.recurrence.symbol)
+                                    .font(.subheadline)
+                            }
+                            .onChange(of: task.recurrence) { _, newValue in
+                                switch newValue {
+                                case .none:
+                                    // إلغاء أي تكرار يعني إطفاء التذكير
+                                    task.dueDate = nil
+                                    storeEnv.cancelTaskNotification(taskID: task.id)
+                                case .daily:
+                                    // لو التذكير مطفأ، فعّله بوقت افتراضي ثم جدول
+                                    if task.dueDate == nil {
+                                        setDailyTime(hour: 9, minute: 0)
+                                    } else {
+                                        scheduleNotificationForCurrentRecurrence()
+                                    }
+                                case .weekly:
+                                    let hm = Calendar.current.dateComponents([.hour, .minute], from: currentDueDate)
+                                    let h = hm.hour ?? 9, m = hm.minute ?? 0
+                                    if task.dueDate == nil {
+                                        setWeekly(weekday: selectedWeekday, hour: 9, minute: 0)
+                                    } else {
+                                        setWeekly(weekday: selectedWeekday, hour: h, minute: m)
+                                    }
+                                case .monthly:
+                                    let hm = Calendar.current.dateComponents([.hour, .minute], from: currentDueDate)
+                                    let h = hm.hour ?? 9, m = hm.minute ?? 0
+                                    if task.dueDate == nil {
+                                        setMonthly(day: selectedMonthDay, hour: 9, minute: 0)
+                                    } else {
+                                        setMonthly(day: selectedMonthDay, hour: h, minute: m)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+
+                        Divider()
+
+                        // الصف الثاني: تفعيل التذكير
+                        HStack(spacing: 10) {
+                            Label("تفعيل التذكير", systemImage: "bell")
+                                .font(.subheadline)
+                            Spacer()
+                            Toggle("", isOn: isReminderOnBinding)
+                                .labelsHidden()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(.secondarySystemBackground))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.15), lineWidth: 0.75)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    
+                    if task.dueDate != nil {
+                        // واجهة متكيّفة حسب نوع التكرار:
+                        switch task.recurrence {
+                        case .none:
+                            // تاريخ + وقت لمرة واحدة
+                            DatePicker("تاريخ ووقت التذكير", selection: Binding<Date>(
+                                get: { currentDueDate },
+                                set: { newDate in
+                                    task.dueDate = newDate
+                                    storeEnv.scheduleTaskNotification(for: task)
+                                }
+                            ), displayedComponents: [.date, .hourAndMinute])
+                            .datePickerStyle(.compact)
+                            
+                        case .daily:
+                            // وقت فقط يومياً
+                            DatePicker("وقت يومي", selection: Binding<Date>(
+                                get: {
+                                    var comps = DateComponents()
+                                    comps.hour = selectedHourMinute.hour
+                                    comps.minute = selectedHourMinute.minute
+                                    // اليوم الحالي فقط للعرض، القيمة الفعلية تحفظ فقط الوقت
+                                    return Calendar.current.date(from: comps) ?? currentDueDate
+                                },
+                                set: { newDate in
+                                    let hm = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                    setDailyTime(hour: hm.hour ?? 9, minute: hm.minute ?? 0)
+                                }
+                            ), displayedComponents: [.hourAndMinute])
+                            .datePickerStyle(.compact)
+                            
+                        case .weekly:
+                            // يوم أسبوع + وقت
+                            VStack(alignment: .leading, spacing: 8) {
+                                Picker("اليوم في الأسبوع", selection: Binding<Int>(
+                                    get: { selectedWeekday },
+                                    set: { newWeekday in
+                                        setWeekly(weekday: newWeekday, hour: selectedHourMinute.hour, minute: selectedHourMinute.minute)
+                                    }
+                                )) {
+                                    ForEach(arabicWeekdays, id: \.value) { item in
+                                        Text(item.name).tag(item.value)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                
+                                DatePicker("وقت في اليوم", selection: Binding<Date>(
+                                    get: {
+                                        var comps = DateComponents()
+                                        comps.hour = selectedHourMinute.hour
+                                        comps.minute = selectedHourMinute.minute
+                                        return Calendar.current.date(from: comps) ?? currentDueDate
+                                    },
+                                    set: { newDate in
+                                        let hm = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                        setWeekly(weekday: selectedWeekday, hour: hm.hour ?? 9, minute: hm.minute ?? 0)
+                                    }
+                                ), displayedComponents: [.hourAndMinute])
+                                .datePickerStyle(.compact)
+                            }
+                            
+                        case .monthly:
+                            // يوم من الشهر + وقت
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("اليوم من الشهر")
+                                    Spacer()
+                                    Picker("اليوم من الشهر", selection: Binding<Int>(
+                                        get: { selectedMonthDay },
+                                        set: { newDay in
+                                            setMonthly(day: newDay, hour: selectedHourMinute.hour, minute: selectedHourMinute.minute)
+                                        }
+                                    )) {
+                                        ForEach(1...31, id: \.self) { d in
+                                            Text("\(d)").tag(d)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                }
+                                
+                                DatePicker("وقت في اليوم", selection: Binding<Date>(
+                                    get: {
+                                        var comps = DateComponents()
+                                        comps.hour = selectedHourMinute.hour
+                                        comps.minute = selectedHourMinute.minute
+                                        return Calendar.current.date(from: comps) ?? currentDueDate
+                                    },
+                                    set: { newDate in
+                                        let hm = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                        setMonthly(day: selectedMonthDay, hour: hm.hour ?? 9, minute: hm.minute ?? 0)
+                                    }
+                                ), displayedComponents: [.hourAndMinute])
+                                .datePickerStyle(.compact)
+                            }
+                        }
+                        
+                        HStack(spacing: 6) {
+                            Image(systemName: task.recurrence.symbol)
+                            Text("النمط: \(task.recurrence.title)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .padding()
@@ -1097,7 +1462,6 @@ struct TaskDetailView: View {
             case .failure: break
             }
         }
-        // PHPickerViewController (iOS 14+)
         .sheet(isPresented: $isPhotoPickerPresented) {
             PhotoPickerView(filter: .images, selectionLimit: 1) { image in
                 guard let image = image else { return }
@@ -1139,6 +1503,9 @@ struct TaskDetailView: View {
             Button("إلغاء", role: .cancel) { renamingAttachment = nil }
         } message: {
             Text("أدخل الاسم الجديد للمرفق.")
+        }
+        .onAppear {
+            storeEnv.requestNotificationAuthorizationIfNeeded()
         }
     }
     
@@ -1599,3 +1966,4 @@ struct PhotoPickerView: UIViewControllerRepresentable {
         }
     }
 }
+
