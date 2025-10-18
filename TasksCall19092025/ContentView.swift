@@ -12,7 +12,8 @@ import Combine
 import UniformTypeIdentifiers
 import UserNotifications
 import QuickLook
-import PhotosUI // نحتاجه لـ PHPickerViewController (ضمن PhotosUI framework لكنه متاح من iOS 14 مع الواجهة الكلاسيكية)
+import PhotosUI
+import ZIPFoundation // للنسخة الاحتياطية الكاملة (ZIP)
 
 
 // MARK: - Model
@@ -396,12 +397,30 @@ final class TasksStore: ObservableObject {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["daily-fixed-time-reminder"])
     }
     func scheduleTestNotification() {
-        guard notificationsEnabled else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "اختبار الإشعار"
-        content.body = "هذا إشعار تجريبي للتأكد من صلاحيات الإشعارات."
-        content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "test-\(UUID().uuidString)", content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))) { _ in }
+        // اطلب الإذن إن لزم، ثم أرسل إشعار تجريبي فورًا حتى لو كان toggle مطفأ
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let sendTest = {
+                let content = UNMutableNotificationContent()
+                content.title = "اختبار الإشعار"
+                content.body = "هذا إشعار تجريبي للتأكد من صلاحيات الإشعارات."
+                content.sound = .default
+
+                let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+                let request = UNNotificationRequest(identifier: "test-\(UUID().uuidString)",
+                                                    content: content,
+                                                    trigger: trigger)
+
+                UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+            }
+
+            if settings.authorizationStatus == .notDetermined {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
+                    sendTest()
+                }
+            } else {
+                sendTest()
+            }
+        }
     }
     
     // MARK: - إشعار مخصص لكل مهمة حسب التكرار/التاريخ
@@ -477,6 +496,131 @@ final class TasksStore: ObservableObject {
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
     }
+    
+    /// إنشاء نسخة احتياطية كاملة كملف ZIP (يتضمن JSON + جميع المرفقات)
+    func exportFullBackupZIP() -> URL? {
+        print("🚀 بدء إنشاء نسخة احتياطية ZIP...")
+        let fm = FileManager.default
+        // 1) أنشئ ملف ZIP في المؤقت مباشرة
+        let zipURL = fm.temporaryDirectory.appendingPathComponent("TasksBackup-\(UUID().uuidString).zip")
+        guard let archive = Archive(url: zipURL, accessMode: .create) else { return nil }
+
+        // 2) أضف JSON
+        do {
+            let data = try JSONEncoder().encode(pages)
+            // نكتب JSON مؤقتًا ثم نضيفه
+            let tempJSON = fm.temporaryDirectory.appendingPathComponent("tasks_pages-\(UUID().uuidString).json")
+            try data.write(to: tempJSON, options: .atomic)
+            defer { try? fm.removeItem(at: tempJSON) }
+            try archive.addEntry(with: "tasks_pages.json", fileURL: tempJSON, compressionMethod: .deflate)
+        } catch {
+            print("❌ خطأ أثناء إنشاء ZIP: \(error.localizedDescription)")
+            return nil
+        }
+
+        // 3) أضف جميع المرفقات مباشرة من مواقعها الحالية
+        // اجعل الأسماء فريدة لتفادي الاستبدال
+        var usedNames = Set<String>()
+        func uniqueName(_ name: String) -> String {
+            if !usedNames.contains(name) { usedNames.insert(name); return name }
+            let base = (name as NSString).deletingPathExtension
+            let ext = (name as NSString).pathExtension
+            var i = 2
+            while true {
+                let candidate = ext.isEmpty ? "\(base)-\(i)" : "\(base)-\(i).\(ext)"
+                if !usedNames.contains(candidate) { usedNames.insert(candidate); return candidate }
+                i += 1
+            }
+        }
+
+        var attachmentsAdded = 0
+
+        for page in pages {
+            for task in page.tasks {
+                for att in task.attachments {
+                    let src = att.fileURL
+                    // تحقّق أن الملف موجود فعلاً
+                    guard fm.fileExists(atPath: src.path) else { continue }
+
+                    // حاول إضافة الملف مباشرةً من مصدره
+                    let name = uniqueName(src.lastPathComponent)
+
+                    do {
+                        try archive.addEntry(with: "Attachments/\(name)", fileURL: src, compressionMethod: .deflate)
+                        attachmentsAdded += 1
+                    } catch {
+                        print("❌ خطأ أثناء إنشاء ZIP: \(error.localizedDescription)")
+                        // مسار بديل: قراءة البيانات وإضافتها بمزوّد (provider)
+                        if let d = try? Data(contentsOf: src) {
+                            let size = UInt32(d.count)
+                            do {
+                                try archive.addEntry(with: "Attachments/\(name)", type: .file, uncompressedSize: size, compressionMethod: .deflate, provider: { (position, size) -> Data in
+                                    let start = Int(position)
+                                    let end = min(start + Int(size), d.count)
+                                    return d.subdata(in: start..<end)
+                                })
+                                attachmentsAdded += 1
+                            } catch {
+                                print("❌ خطأ أثناء إنشاء ZIP: \(error.localizedDescription)")
+                                // تجاهل هذا الملف فقط
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4) لو ما فيه مرفقات مضافة، يظل ZIP يحوي JSON فقط — هذا متوقع
+        print("✅ تم إنشاء النسخة الاحتياطية بنجاح: \(zipURL.path)")
+        return zipURL
+    }
+
+    /// استيراد نسخة احتياطية سواء كانت JSON مفرد أو ZIP كامل
+    func importBackup(from url: URL) throws {
+        let fm = FileManager.default
+        let ext = url.pathExtension.lowercased()
+        if ext == "json" {
+            try importData(from: url)
+            return
+        }
+        if ext == "zip" {
+            // فك الضغط إلى مجلد مؤقت
+            let destRoot = fm.temporaryDirectory.appendingPathComponent("Restore-\(UUID().uuidString)")
+            try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
+            guard let archive = Archive(url: url, accessMode: .read) else {
+                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey:"تعذر فتح ملف ZIP"])
+            }
+            for entry in archive {
+                let outURL = destRoot.appendingPathComponent(entry.path)
+                let parent = outURL.deletingLastPathComponent()
+                try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+                _ = try archive.extract(entry, to: outURL)
+            }
+            // اقرأ JSON
+            let jsonURL = destRoot.appendingPathComponent("tasks_pages.json")
+            let data = try Data(contentsOf: jsonURL)
+            let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
+            self.pages = decoded
+            // انسخ المرفقات إلى Documents
+            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let attachmentsSrc = destRoot.appendingPathComponent("Attachments")
+            if let srcFiles = try? fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil) {
+                for f in srcFiles {
+                    let dest = docs.appendingPathComponent(f.lastPathComponent)
+                    if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
+                    do { try fm.copyItem(at: f, to: dest) }
+                    catch {
+                        if let d = try? Data(contentsOf: f) { try? d.write(to: dest, options: .atomic) }
+                    }
+                }
+            }
+            return
+        }
+        throw NSError(domain: "import", code: -2, userInfo: [NSLocalizedDescriptionKey: "صيغة غير مدعومة. استخدم JSON أو ZIP."])
+    }
+    
+    
+    
 }
 
 // MARK: - View
@@ -500,7 +644,7 @@ struct ContentView: View {
     @State private var filter: TasksFilter = .all
     @State private var defaultPriorityForNewTask: TaskPriority = .medium
     @State private var sortByPriority: Bool = true
-    
+    @State private var showPriorityPickerForNew: Bool = false
     @State private var isAddingPage: Bool = false
     @State private var newPageName: String = ""
     @State private var renamingPage: TaskPage? = nil
@@ -583,6 +727,7 @@ struct ContentView: View {
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
     }
+
     private var remainingCount: Int {
         if let page = currentPage, page.isDaily {
             return store.pages.filter { !$0.isDaily }.flatMap { $0.tasks }.filter { $0.isInDaily && !$0.isDone }.count
@@ -642,10 +787,18 @@ struct ContentView: View {
                                 }
                             }
                             .contextMenu {
-                                Menu("الأولوية") {
-                                    ForEach(TaskPriority.allCases) { p in
-                                        Button { task.priority = p } label: {
-                                            Label(p.title, systemImage: "circle.fill").foregroundStyle(p.color)
+                                ForEach(TaskPriority.allCases) { p in
+                                    Button { task.priority = p } label: {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: "circle.fill")
+                                                .foregroundStyle(p.color)
+                                            Text(p.title)
+                                                .foregroundStyle(p.color)
+                                            Spacer()
+                                            if p == task.priority {
+                                                Image(systemName: "checkmark")
+                                                    .foregroundStyle(p.color)
+                                            }
                                         }
                                     }
                                 }
@@ -694,7 +847,38 @@ struct ContentView: View {
                     Spacer(); Button("تم") { isTextFieldFocused = false }
                 }
             }
-            .sheet(isPresented: $isShowingSettings) { SettingsView(store: store) }
+            .sheet(isPresented: $isShowingSettings) { SettingsView(store: store)
+                    .forceRTL() // ← يخلي الفورم NavigationStack وكل ما تحته يمين-لـ-يسار
+
+            }
+            .sheet(isPresented: $showPriorityPickerForNew) {
+                NavigationStack {
+                    List {
+                        ForEach(TaskPriority.allCases) { p in
+                            Button {
+                                defaultPriorityForNewTask = p
+                                showPriorityPickerForNew = false
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "circle.fill")
+                                        .foregroundColor(colorForPriority(p))
+                                    Text(p.title)
+                                        .foregroundColor(colorForPriority(p))
+                                    Spacer()
+                                    if p == defaultPriorityForNewTask {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(colorForPriority(p))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("اختيار الأولوية")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { showPriorityPickerForNew = false } }
+                    }
+                }
+            }
             .onAppear {
                 if selectedPageID == nil { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
                 store.requestNotificationAuthorizationIfNeeded()
@@ -864,9 +1048,14 @@ struct ContentView: View {
             } else {
                 HStack(spacing: 10) {
                     Menu {
-                        Picker("الأولوية الافتراضية", selection: $defaultPriorityForNewTask) {
+                        Picker("الأولوية", selection: $defaultPriorityForNewTask) {
                             ForEach(TaskPriority.allCases) { p in
-                                Label(p.title, systemImage: "circle.fill").foregroundStyle(p.color).tag(p)
+                                HStack {
+                                    Image(systemName: "circle.fill")
+                                        .foregroundColor(colorForPriority(p))
+                                    Text(p.title)
+                                }
+                                .tag(p)
                             }
                         }
                     } label: {
@@ -960,7 +1149,13 @@ struct ContentView: View {
         if currentPage?.isDaily == true { return pageNameForTask(taskID) }
         return nil
     }
-    
+    private func colorForPriority(_ p: TaskPriority) -> Color {
+        switch p {
+        case .low: return .green
+        case .medium: return .orange
+        case .high: return .red
+        }
+    }
     private func toggleDailyForTaskBinding(_ taskBinding: Binding<TaskItem>, to newValue: Bool) {
         let task = taskBinding.wrappedValue
         if let pageID = pageIDForTask(task.id) {
@@ -979,13 +1174,16 @@ struct ContentView: View {
 private struct TaskCardRow: View {
     @Binding var task: TaskItem
     var pageName: String?
-    
+
+    private var hasAttachments: Bool { !task.attachments.isEmpty }
+    private var hasNotes: Bool { !task.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     private var stepsProgress: Double {
         guard !task.steps.isEmpty else { return 0 }
         let done = task.steps.filter { $0.isDone }.count
         return Double(done) / Double(task.steps.count)
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
@@ -1003,18 +1201,18 @@ private struct TaskCardRow: View {
                         .font(.system(size: 22))
                 }
                 .buttonStyle(.plain)
-                
+
                 Text(task.title)
                     .lineLimit(1)
                     .strikethrough(task.isDone, color: .secondary)
                     .foregroundStyle(task.isDone ? .secondary : .primary)
-                
+
                 if task.isInDaily {
                     Image(systemName: "sun.max.fill")
                         .foregroundStyle(.yellow)
                         .imageScale(.small)
                 }
-                
+
                 Text(task.priority.title)
                     .font(.caption.bold())
                     .foregroundStyle(.white)
@@ -1022,8 +1220,22 @@ private struct TaskCardRow: View {
                     .padding(.vertical, 4)
                     .background(task.priority.color)
                     .clipShape(Capsule())
+
+                Spacer()
+                HStack(spacing: 8) {
+                    if hasAttachments {
+                        Image(systemName: "paperclip")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("مرفقات موجودة")
+                    }
+                    if hasNotes {
+                        Image(systemName: "note.text")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("ملاحظات موجودة")
+                    }
+                }
             }
-            
+
             HStack(spacing: 6) {
                 Text(createdAtString(task.createdAt))
                     .font(.caption2)
@@ -1035,7 +1247,7 @@ private struct TaskCardRow: View {
                 }
                 Spacer()
             }
-            
+
             if !task.steps.isEmpty {
                 ZStack(alignment: .leading) {
                     Capsule()
@@ -1063,7 +1275,7 @@ private struct TaskCardRow: View {
         )
         .contentShape(Rectangle())
     }
-    
+
     private func createdAtString(_ date: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "ar")
@@ -1779,11 +1991,13 @@ struct DocumentScannerView: UIViewControllerRepresentable {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: TasksStore
-    
-    @State private var exportURL: URL? = nil
-    @State private var isSharePresented: Bool = false
+
+    private struct ShareItem: Identifiable { let id = UUID(); let url: URL }
+    @State private var shareItem: ShareItem? = nil
     @State private var isImporterPresented: Bool = false
     @State private var importError: Bool = false
+    @State private var exportError: Bool = false
+    @State private var exportErrorMessage: String = ""
     
     var body: some View {
         NavigationStack {
@@ -1806,26 +2020,58 @@ struct SettingsView: View {
                 }
                 
                 Section("النسخ الاحتياطي والاستعادة") {
+                    // تصدير البيانات فقط (JSON)
                     Button("تصدير البيانات كـ JSON") {
-                        exportURL = store.exportData()
-                        if exportURL != nil { isSharePresented = true }
-                    }
-                    .disabled(store.pages.isEmpty)
-                    .sheet(isPresented: $isSharePresented) {
-                        if let url = exportURL { ShareSheet(activityItems: [url]) }
-                    }
-                    
-                    Button("استيراد بيانات من JSON") { isImporterPresented = true }
-                    .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.json]) { result in
-                        switch result {
-                        case .success(let url):
-                            do { try store.importData(from: url) } catch { importError = true }
-                        case .failure: importError = true
+                        if let url = store.exportData() {
+                            shareItem = ShareItem(url: url)
+                        } else {
+                            exportErrorMessage = "تعذر إنشاء ملف JSON للتصدير."
+                            exportError = true
                         }
                     }
-                    .alert("فشل الاستيراد", isPresented: $importError) {
-                        Button("حسنًا", role: .cancel) { }
-                    } message: { Text("تأكد أن الملف بتنسيق التطبيق الصحيح.") }
+                    .disabled(store.pages.isEmpty)
+
+                    // تصدير نسخة احتياطية كاملة (ZIP)
+                    Button("نسخة احتياطية كاملة (ZIP)") {
+                        if let url = store.exportFullBackupZIP() {
+                            shareItem = ShareItem(url: url)
+                        } else {
+                            exportErrorMessage = "تعذر إنشاء ملف ZIP. تأكد من إضافة مكتبة ZIPFoundation عبر Package Dependencies ثم حاول مجددًا."
+                            exportError = true
+                        }
+                    }
+
+                    // استيراد (يدعم JSON و ZIP)
+                    Button("استيراد ملف (JSON/ZIP)") {
+                        isImporterPresented = true
+                    }
+                }
+                // استيراد JSON/ZIP
+                .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+                    switch result {
+                    case .success(let urls):
+                        if let url = urls.first {
+                            let _ = url.startAccessingSecurityScopedResource()
+                            defer { url.stopAccessingSecurityScopedResource() }
+                            do {
+                                try store.importBackup(from: url)
+                            } catch {
+                                importError = true
+                            }
+                        }
+                    case .failure:
+                        break
+                    }
+                }
+                .alert("فشل الاستيراد", isPresented: $importError) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text("تعذر استيراد الملف. تأكد أن الصيغة JSON أو ZIP صحيحة.")
+                }
+                .alert("فشل التصدير", isPresented: $exportError) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text(exportErrorMessage.isEmpty ? "حدث خطأ غير معروف أثناء التصدير." : exportErrorMessage)
                 }
                 
                 Section("المرفقات") {
@@ -1840,6 +2086,12 @@ struct SettingsView: View {
             }
             .navigationTitle("الإعدادات")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
+            .sheet(item: $shareItem) { item in
+                ShareLink(item: item.url) {
+                    Label("مشاركة النسخة الاحتياطية", systemImage: "square.and.arrow.up")
+                }
+                .presentationDetents([.medium, .large])
+            }
         }
     }
 }
