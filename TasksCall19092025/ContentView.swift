@@ -2100,6 +2100,10 @@ struct SettingsView: View {
     // فتح مستعرض ملفات يبدأ من Documents
     @State private var showDocumentsBrowser: Bool = false
     
+    // جديد: معاينة مختارة من مجلد الحفظ + إظهار زر مشاركة بالأعلى
+    @State private var previewURLsFromDocs: [URL] = []
+    @State private var showPreviewFromDocs: Bool = false
+    
     private var documentsPath: String {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? ""
     }
@@ -2144,24 +2148,27 @@ struct SettingsView: View {
                         }
                     }
 
-                    Button("استيراد ملف (JSON/ZIP)") {
-                        isImporterPresented = true
-                    }
-
-                    // زر مباشر لفتح مجلد الحفظ في واجهة الملفات
-                    Button {
+                    Button("فتح مجلد الحفظ في الملفات") {
                         showDocumentsBrowser = true
-                    } label: {
-                        Label("فتح مجلد الحفظ في الملفات", systemImage: "folder")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.accentColor)
                     .sheet(isPresented: $showDocumentsBrowser) {
-                        DocumentsBrowserView()
-                            .ignoresSafeArea()
+                        DocumentsBrowserView { pickedURL in
+                            // عند اختيار ملف من Documents:
+                            let ext = pickedURL.pathExtension.lowercased()
+                            if ["png","jpg","jpeg","heic"].contains(ext) {
+                                // المطلوب: فتح معاينة أولاً مع زر مشاركة بالأعلى
+                                previewURLsFromDocs = [pickedURL]
+                                showPreviewFromDocs = true
+                            } else {
+                                // مشاركة مباشرة كما كانت
+                                shareItem = ShareItem(url: pickedURL)
+                            }
+                        }
+                        .ignoresSafeArea()
                     }
 
-                    // نص توضيحي مختصر
                     Text("يمكنك تصفح جميع المرفقات والملفات من خلال مجلد التطبيق في تطبيق الملفات. تأكد من تفعيل خيار مشاركة الملفات في إعدادات التطبيق.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -2219,29 +2226,84 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
             .sheet(item: $shareItem) { item in
                 ShareLink(item: item.url) {
-                    Label("مشاركة النسخة الاحتياطية", systemImage: "square.and.arrow.up")
+                    Label("مشاركة الملف", systemImage: "square.and.arrow.up")
                 }
                 .presentationDetents([.medium, .large])
             }
+            // جديد: معاينة Quick Look مع زر مشاركة بالأعلى للصور المختارة من مجلد الحفظ
+            .sheet(isPresented: $showPreviewFromDocs) {
+                NavigationStack {
+                    QLPreview(urls: previewURLsFromDocs)
+                        .ignoresSafeArea()
+                        .navigationTitle("معاينة")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            if let url = previewURLsFromDocs.first {
+                                ToolbarItem(placement: .topBarTrailing) {
+                                    ShareLink(item: url) {
+                                        Image(systemName: "square.and.arrow.up")
+                                    }
+                                }
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("إغلاق") { showPreviewFromDocs = false }
+                                }
+                            }
+                        }
+                }
+            }
         }
+    }
+    
+    // تحويل صورة داخل Documents إلى PDF مؤقت للمشاركة
+    private func imageURLToPDF(url: URL) -> URL? {
+        guard let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else { return nil }
+        let pdfURL = FileManager.default.temporaryDirectory.appendingPathComponent("Shared-\(UUID().uuidString).pdf")
+        let pageRect = CGRect(origin: .zero, size: image.size)
+        UIGraphicsBeginPDFContextToFile(pdfURL.path, pageRect, nil)
+        UIGraphicsBeginPDFPageWithInfo(pageRect, nil)
+        image.draw(in: pageRect)
+        UIGraphicsEndPDFContext()
+        return pdfURL
     }
 }
 
 // MARK: - مستعرض مجلد Documents
 
 struct DocumentsBrowserView: UIViewControllerRepresentable {
+    var onPick: (URL) -> Void
+    
     func makeUIViewController(context: Context) -> UINavigationController {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        // استخدام UIDocumentPickerViewController لعرض محتوى Documents
-        // يسمح للمستخدم فتح/مشاركة/نسخ الملفات من مكانها (Open In Place)
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
         picker.directoryURL = docs
         picker.shouldShowFileExtensions = true
         picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
         let nav = UINavigationController(rootViewController: picker)
         return nav
     }
     func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+    
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            // محاولة تأمين صلاحية الوصول إن لزم
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            onPick(url)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            // لا شيء
+        }
+    }
 }
 
 struct ShareSheet: UIViewControllerRepresentable {

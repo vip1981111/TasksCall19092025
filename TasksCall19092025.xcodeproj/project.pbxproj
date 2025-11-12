@@ -14,9 +14,22 @@
 		A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TasksCall19092025.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A861A9962EC46FAE00783861 /* Exceptions for "TasksCall19092025" folder in "TasksCall19092025" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A825070F2E7DBB5800F6ADE8 /* TasksCall19092025 */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A82507122E7DBB5800F6ADE8 /* TasksCall19092025 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A861A9962EC46FAE00783861 /* Exceptions for "TasksCall19092025" folder in "TasksCall19092025" target */,
+			);
 			path = TasksCall19092025;
 			sourceTree = "<group>";
 		};
@@ -265,7 +278,9 @@
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TasksCall19092025/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "نحتاج للوصول الى الصور لارفاقها بالمهام";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
@@ -301,7 +316,9 @@
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TasksCall19092025/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "نحتاج للوصول الى الصور لارفاقها بالمهام";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
