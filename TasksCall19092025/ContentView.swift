@@ -1505,12 +1505,30 @@ struct TaskDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "flag.fill").foregroundStyle(task.priority.color)
-                        TextField("موضوع المهمة", text: $task.title)
-                            .font(.title3.weight(.semibold))
-                            .textInputAutocapitalization(.sentences)
-                            .onChange(of: task.title) { _, _ in
-                                if task.dueDate != nil { storeEnv.scheduleTaskNotification(for: task) }
+                        // العنوان: TextEditor متعدد الأسطر بتصميم أنيق + Placeholder
+                        ZStack(alignment: .topLeading) {
+                            if task.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text("موضوع المهمة")
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal, 8)
                             }
+                            TextEditor(text: $task.title)
+                                .font(.title3.weight(.semibold))
+                                .scrollContentBackground(.hidden)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 6)
+                                .frame(minHeight: 60)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(Color.secondary.opacity(0.15), lineWidth: 0.75)
+                                )
+                                .onChange(of: task.title) { _, _ in
+                                    if task.dueDate != nil { storeEnv.scheduleTaskNotification(for: task) }
+                                }
+                        }
                     }
                     HStack(spacing: 8) {
                         Label(createdAtString, systemImage: "clock")
@@ -2348,3 +2366,4 @@ struct PhotoPickerView: UIViewControllerRepresentable {
         }
     }
 }
+
