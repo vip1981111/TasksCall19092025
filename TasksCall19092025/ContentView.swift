@@ -259,17 +259,17 @@ final class TasksStore: ObservableObject {
         let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return false }
         guard !isDuplicatePageName(t, excludingID: id) else { return false }
-        withAnimation { pages[i].name = t }
+        _ = withAnimation { pages[i].name = t }
         return true
     }
     func deletePage(id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
-        withAnimation { pages.remove(at: i) }
+        _ = withAnimation { pages.remove(at: i) }
     }
     func addTask(in pageID: UUID, title: String, priority: TaskPriority) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         let task = TaskItem(title: title, isDone: false, priority: priority)
-        withAnimation { pages[i].tasks.insert(task, at: 0) }
+        _ = withAnimation { pages[i].tasks.insert(task, at: 0) }
     }
     func deleteTask(in pageID: UUID, id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
@@ -399,7 +399,7 @@ final class TasksStore: ObservableObject {
         let cal = Calendar.current
         switch recurrence {
         case .none:
-            var c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
+            let c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
             if c.year == nil || c.month == nil || c.day == nil { return nil }
             return c
         case .daily:
@@ -440,7 +440,12 @@ final class TasksStore: ObservableObject {
     func exportFullBackupZIP() -> URL? {
         let fm = FileManager.default
         let zipURL = fm.temporaryDirectory.appendingPathComponent("TasksBackup-\(UUID().uuidString).zip")
-        guard let archive = Archive(url: zipURL, accessMode: .create) else { return nil }
+        let archive: Archive
+        do {
+            archive = try Archive(url: zipURL, accessMode: .create)
+        } catch {
+            return nil
+        }
         
         // حفظ ملف JSON
         do {
@@ -480,11 +485,11 @@ final class TasksStore: ObservableObject {
                     } catch {
                         // محاولة بديلة باستخدام Data
                         if let d = try? Data(contentsOf: src) {
-                            let size = UInt32(d.count)
+                            let size = Int64(d.count)
                             do {
-                                try archive.addEntry(with: "Attachments/\(name)", type: .file, uncompressedSize: size, compressionMethod: .deflate, provider: { (position, size) -> Data in
+                                try archive.addEntry(with: "Attachments/\(name)", type: .file, uncompressedSize: size, compressionMethod: .deflate, provider: { (position: Int64, size: Int) -> Data in
                                     let start = Int(position)
-                                    let end = min(start + Int(size), d.count)
+                                    let end = min(start + size, d.count)
                                     return d.subdata(in: start..<end)
                                 })
                                 savedAttachments += 1
@@ -511,8 +516,11 @@ final class TasksStore: ObservableObject {
             let destRoot = fm.temporaryDirectory.appendingPathComponent("Restore-\(UUID().uuidString)")
             try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
             
-            guard let archive = Archive(url: url, accessMode: .read) else {
-                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey:"تعذر فتح ملف ZIP"])
+            let archive: Archive
+            do {
+                archive = try Archive(url: url, accessMode: .read)
+            } catch {
+                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey:"تعذر فتح ملف ZIP: \(error.localizedDescription)"])
             }
             
             // استخراج جميع الملفات من ZIP
@@ -605,15 +613,18 @@ final class TasksStore: ObservableObject {
             return (0, 0)
         }
         
-        // جمع كل مسارات المرفقات المستخدمة
-        var usedFileURLs = Set<URL>()
+        // جمع أسماء الملفات المستخدمة (بدلاً من URLs)
+        var usedFileNames = Set<String>()
         for page in pages {
             for task in page.tasks {
                 for attachment in task.attachments {
-                    usedFileURLs.insert(attachment.fileURL)
+                    usedFileNames.insert(attachment.fileURL.lastPathComponent)
                 }
             }
         }
+        
+        print("📋 عدد الملفات المستخدمة: \(usedFileNames.count)")
+        print("📋 الملفات المستخدمة: \(usedFileNames)")
         
         // البحث عن جميع الملفات في مجلد Documents
         guard let allFiles = try? fm.contentsOfDirectory(
@@ -635,13 +646,15 @@ final class TasksStore: ObservableObject {
                 continue
             }
             
+            let fileName = fileURL.lastPathComponent
+            
             // تخطي ملف JSON الرئيسي
-            if fileURL.lastPathComponent == "tasks_pages.json" {
+            if fileName == "tasks_pages.json" {
                 continue
             }
             
             // إذا لم يكن الملف مستخدمًا، احذفه
-            if !usedFileURLs.contains(fileURL) {
+            if !usedFileNames.contains(fileName) {
                 // حساب حجم الملف قبل الحذف
                 if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     freedSpace += Int64(fileSize)
@@ -651,10 +664,12 @@ final class TasksStore: ObservableObject {
                 do {
                     try fm.removeItem(at: fileURL)
                     deletedCount += 1
-                    print("🗑️ تم حذف ملف غير مستخدم: \(fileURL.lastPathComponent)")
+                    print("🗑️ تم حذف ملف غير مستخدم: \(fileName)")
                 } catch {
-                    print("❌ فشل حذف \(fileURL.lastPathComponent): \(error.localizedDescription)")
+                    print("❌ فشل حذف \(fileName): \(error.localizedDescription)")
                 }
+            } else {
+                print("✅ تم الحفاظ على الملف المستخدم: \(fileName)")
             }
         }
         
@@ -669,11 +684,12 @@ final class TasksStore: ObservableObject {
             return 0
         }
         
-        var usedFileURLs = Set<URL>()
+        // جمع أسماء الملفات المستخدمة (بدلاً من URLs)
+        var usedFileNames = Set<String>()
         for page in pages {
             for task in page.tasks {
                 for attachment in task.attachments {
-                    usedFileURLs.insert(attachment.fileURL)
+                    usedFileNames.insert(attachment.fileURL.lastPathComponent)
                 }
             }
         }
@@ -693,11 +709,13 @@ final class TasksStore: ObservableObject {
                 continue
             }
             
-            if fileURL.lastPathComponent == "tasks_pages.json" {
+            let fileName = fileURL.lastPathComponent
+            
+            if fileName == "tasks_pages.json" {
                 continue
             }
             
-            if !usedFileURLs.contains(fileURL) {
+            if !usedFileNames.contains(fileName) {
                 unusedCount += 1
             }
         }
