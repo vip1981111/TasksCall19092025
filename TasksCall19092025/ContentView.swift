@@ -441,6 +441,8 @@ final class TasksStore: ObservableObject {
         let fm = FileManager.default
         let zipURL = fm.temporaryDirectory.appendingPathComponent("TasksBackup-\(UUID().uuidString).zip")
         guard let archive = Archive(url: zipURL, accessMode: .create) else { return nil }
+        
+        // حفظ ملف JSON
         do {
             let data = try JSONEncoder().encode(pages)
             let tempJSON = fm.temporaryDirectory.appendingPathComponent("tasks_pages-\(UUID().uuidString).json")
@@ -448,7 +450,11 @@ final class TasksStore: ObservableObject {
             defer { try? fm.removeItem(at: tempJSON) }
             try archive.addEntry(with: "tasks_pages.json", fileURL: tempJSON, compressionMethod: .deflate)
         } catch { return nil }
+        
+        // حفظ جميع المرفقات
         var usedNames = Set<String>()
+        var savedAttachments = 0
+        
         func uniqueName(_ name: String) -> String {
             if !usedNames.contains(name) { usedNames.insert(name); return name }
             let base = (name as NSString).deletingPathExtension
@@ -460,15 +466,19 @@ final class TasksStore: ObservableObject {
                 i += 1
             }
         }
+        
         for page in pages {
             for task in page.tasks {
                 for att in task.attachments {
                     let src = att.fileURL
                     guard fm.fileExists(atPath: src.path) else { continue }
                     let name = uniqueName(src.lastPathComponent)
+                    
                     do {
                         try archive.addEntry(with: "Attachments/\(name)", fileURL: src, compressionMethod: .deflate)
+                        savedAttachments += 1
                     } catch {
+                        // محاولة بديلة باستخدام Data
                         if let d = try? Data(contentsOf: src) {
                             let size = UInt32(d.count)
                             do {
@@ -477,49 +487,101 @@ final class TasksStore: ObservableObject {
                                     let end = min(start + Int(size), d.count)
                                     return d.subdata(in: start..<end)
                                 })
+                                savedAttachments += 1
                             } catch { }
                         }
                     }
                 }
             }
         }
+        
+        print("✅ تم حفظ \(savedAttachments) مرفق في النسخة الاحتياطية")
         return zipURL
     }
 
     func importBackup(from url: URL) throws {
         let fm = FileManager.default
         let ext = url.pathExtension.lowercased()
+        
+        // إذا كان الملف JSON، استيراد البيانات فقط
         if ext == "json" { try importData(from: url); return }
+        
+        // إذا كان ZIP، استيراد البيانات والمرفقات
         if ext == "zip" {
             let destRoot = fm.temporaryDirectory.appendingPathComponent("Restore-\(UUID().uuidString)")
             try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
+            
             guard let archive = Archive(url: url, accessMode: .read) else {
                 throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey:"تعذر فتح ملف ZIP"])
             }
+            
+            // استخراج جميع الملفات من ZIP
             for entry in archive {
                 let outURL = destRoot.appendingPathComponent(entry.path)
                 let parent = outURL.deletingLastPathComponent()
                 try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
                 _ = try archive.extract(entry, to: outURL)
             }
+            
+            // استيراد البيانات من JSON
             let jsonURL = destRoot.appendingPathComponent("tasks_pages.json")
             let data = try Data(contentsOf: jsonURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
-            self.pages = decoded
+            
+            // استعادة المرفقات إلى مجلد Documents
             let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
             let attachmentsSrc = destRoot.appendingPathComponent("Attachments")
-            if let srcFiles = try? fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil) {
-                for f in srcFiles {
-                    let dest = docs.appendingPathComponent(f.lastPathComponent)
-                    if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
-                    do { try fm.copyItem(at: f, to: dest) }
-                    catch {
-                        if let d = try? Data(contentsOf: f) { try? d.write(to: dest, options: .atomic) }
+            var restoredAttachments = 0
+            
+            if fm.fileExists(atPath: attachmentsSrc.path) {
+                if let srcFiles = try? fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil) {
+                    for srcFile in srcFiles {
+                        let dest = docs.appendingPathComponent(srcFile.lastPathComponent)
+                        
+                        // حذف الملف القديم إذا كان موجودًا
+                        if fm.fileExists(atPath: dest.path) {
+                            try? fm.removeItem(at: dest)
+                        }
+                        
+                        // نسخ الملف
+                        do {
+                            try fm.copyItem(at: srcFile, to: dest)
+                            restoredAttachments += 1
+                        } catch {
+                            // محاولة بديلة باستخدام Data
+                            if let fileData = try? Data(contentsOf: srcFile) {
+                                do {
+                                    try fileData.write(to: dest, options: .atomic)
+                                    restoredAttachments += 1
+                                } catch { }
+                            }
+                        }
                     }
                 }
             }
+            
+            print("✅ تم استعادة \(restoredAttachments) مرفق من النسخة الاحتياطية")
+            
+            // تحديث المسارات في البيانات المستعادة
+            var updatedPages = decoded
+            for pageIndex in updatedPages.indices {
+                for taskIndex in updatedPages[pageIndex].tasks.indices {
+                    for attIndex in updatedPages[pageIndex].tasks[taskIndex].attachments.indices {
+                        let fileName = updatedPages[pageIndex].tasks[taskIndex].attachments[attIndex].fileName
+                        let newURL = docs.appendingPathComponent(fileName)
+                        updatedPages[pageIndex].tasks[taskIndex].attachments[attIndex].fileURL = newURL
+                    }
+                }
+            }
+            
+            self.pages = updatedPages
+            
+            // تنظيف المجلد المؤقت
+            try? fm.removeItem(at: destRoot)
+            
             return
         }
+        
         throw NSError(domain: "import", code: -2, userInfo: [NSLocalizedDescriptionKey: "صيغة غير مدعومة. استخدم JSON أو ZIP."])
     }
     
@@ -534,6 +596,113 @@ final class TasksStore: ObservableObject {
         } else {
             cancelDailyNotification(taskID: taskID)
         }
+    }
+    
+    // MARK: - تنظيف المرفقات غير المستخدمة
+    func cleanUnusedAttachments() -> (deletedCount: Int, freedSpace: Int64) {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return (0, 0)
+        }
+        
+        // جمع كل مسارات المرفقات المستخدمة
+        var usedFileURLs = Set<URL>()
+        for page in pages {
+            for task in page.tasks {
+                for attachment in task.attachments {
+                    usedFileURLs.insert(attachment.fileURL)
+                }
+            }
+        }
+        
+        // البحث عن جميع الملفات في مجلد Documents
+        guard let allFiles = try? fm.contentsOfDirectory(
+            at: docs,
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return (0, 0)
+        }
+        
+        var deletedCount = 0
+        var freedSpace: Int64 = 0
+        
+        // حذف الملفات غير المستخدمة
+        for fileURL in allFiles {
+            // تخطي المجلدات
+            if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory,
+               isDirectory {
+                continue
+            }
+            
+            // تخطي ملف JSON الرئيسي
+            if fileURL.lastPathComponent == "tasks_pages.json" {
+                continue
+            }
+            
+            // إذا لم يكن الملف مستخدمًا، احذفه
+            if !usedFileURLs.contains(fileURL) {
+                // حساب حجم الملف قبل الحذف
+                if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    freedSpace += Int64(fileSize)
+                }
+                
+                // حذف الملف
+                do {
+                    try fm.removeItem(at: fileURL)
+                    deletedCount += 1
+                    print("🗑️ تم حذف ملف غير مستخدم: \(fileURL.lastPathComponent)")
+                } catch {
+                    print("❌ فشل حذف \(fileURL.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        print("✅ تم تنظيف \(deletedCount) ملف وتحرير \(freedSpace / 1024) KB")
+        return (deletedCount, freedSpace)
+    }
+    
+    // دالة مساعدة لحساب عدد المرفقات غير المستخدمة بدون حذف
+    func countUnusedAttachments() -> Int {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return 0
+        }
+        
+        var usedFileURLs = Set<URL>()
+        for page in pages {
+            for task in page.tasks {
+                for attachment in task.attachments {
+                    usedFileURLs.insert(attachment.fileURL)
+                }
+            }
+        }
+        
+        guard let allFiles = try? fm.contentsOfDirectory(
+            at: docs,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        
+        var unusedCount = 0
+        for fileURL in allFiles {
+            if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory,
+               isDirectory {
+                continue
+            }
+            
+            if fileURL.lastPathComponent == "tasks_pages.json" {
+                continue
+            }
+            
+            if !usedFileURLs.contains(fileURL) {
+                unusedCount += 1
+            }
+        }
+        
+        return unusedCount
     }
 }
 
@@ -1116,100 +1285,11 @@ struct TaskDetailView: View {
         )
     }
     
-    // Helpers for recurrence omitted (unchanged) ...
-
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                // القسم العلوي: معلومات المهمة الأساسية
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Label("معلومات المهمة", systemImage: "info.circle").font(.headline)
-                        Spacer()
-                    }
-                    
-                    // العنوان
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("العنوان").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("عنوان المهمة", text: $task.title)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    
-                    // الأولوية
-                    HStack {
-                        Text("الأولوية").font(.subheadline).foregroundStyle(.secondary)
-                        Spacer()
-                        Menu {
-                            Picker("الأولوية", selection: $task.priority) {
-                                ForEach(TaskPriority.allCases) { p in
-                                    HStack {
-                                        Image(systemName: "circle.fill").foregroundStyle(p.color)
-                                        Text(p.title)
-                                    }.tag(p)
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Circle().fill(task.priority.color).frame(width: 12, height: 12)
-                                Text(task.priority.title)
-                                Image(systemName: "chevron.down").font(.caption)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color.secondary.opacity(0.12))
-                            .clipShape(Capsule())
-                        }
-                    }
-                    
-                    // التكرار والتذكير
-                    Toggle("تفعيل التذكير", isOn: isReminderOnBinding)
-                    
-                    if task.dueDate != nil {
-                        DatePicker("التاريخ والوقت", selection: Binding(
-                            get: { task.dueDate ?? Date() },
-                            set: { task.dueDate = $0; storeEnv.scheduleTaskNotification(for: task) }
-                        ), displayedComponents: [.date, .hourAndMinute])
-                        
-                        Picker("التكرار", selection: Binding(
-                            get: { task.recurrence },
-                            set: { task.recurrence = $0; storeEnv.scheduleTaskNotification(for: task) }
-                        )) {
-                            ForEach(TaskRecurrence.allCases) { r in
-                                HStack {
-                                    Image(systemName: r.symbol)
-                                    Text(r.title)
-                                }.tag(r)
-                            }
-                        }
-                    }
-                    
-                    // إضافة/إزالة من اليومي
-                    Toggle(task.isInDaily ? "موجودة في اليومي" : "إضافة إلى اليومي", isOn: Binding(
-                        get: { task.isInDaily },
-                        set: { onToggleDaily($0) }
-                    ))
-                    
-                    // الحالة
-                    Toggle("منجزة", isOn: $task.isDone)
-                        .onChange(of: task.isDone) { _, newValue in
-                            if newValue {
-                                for i in task.steps.indices {
-                                    task.steps[i].isDone = true
-                                    task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-                                }
-                            }
-                        }
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.secondary.opacity(0.06))
-                )
-                .padding(.horizontal)
-                
+                taskInfoSection
                 Divider()
-                
                 attachmentsSection
                 stepsSection
                 notesSection
@@ -1275,6 +1355,115 @@ struct TaskDetailView: View {
                  : "سيتم حذف المرفق من المهمة فقط، وسيبقى الملف محفوظًا في التخزين.")
         }
         .onAppear { storeEnv.requestNotificationAuthorizationIfNeeded() }
+    }
+    
+    // MARK: - Task Info Section
+    private var taskInfoSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("معلومات المهمة", systemImage: "info.circle").font(.headline)
+                Spacer()
+            }
+            
+            titleField
+            priorityPicker
+            reminderToggle
+            
+            if task.dueDate != nil {
+                dueDatePicker
+                recurrencePicker
+            }
+            
+            dailyToggle
+            completionToggle
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .padding(.horizontal)
+    }
+    
+    private var titleField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("العنوان").font(.subheadline).foregroundStyle(.secondary)
+            TextField("عنوان المهمة", text: $task.title, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...6)
+        }
+    }
+    
+    private var priorityPicker: some View {
+        HStack {
+            Text("الأولوية").font(.subheadline).foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                Picker("الأولوية", selection: $task.priority) {
+                    ForEach(TaskPriority.allCases) { p in
+                        HStack {
+                            Image(systemName: "circle.fill").foregroundStyle(p.color)
+                            Text(p.title)
+                        }.tag(p)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle().fill(task.priority.color).frame(width: 12, height: 12)
+                    Text(task.priority.title)
+                    Image(systemName: "chevron.down").font(.caption)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
+            }
+        }
+    }
+    
+    private var reminderToggle: some View {
+        Toggle("تفعيل التذكير", isOn: isReminderOnBinding)
+    }
+    
+    private var dueDatePicker: some View {
+        DatePicker("التاريخ والوقت", selection: Binding(
+            get: { task.dueDate ?? Date() },
+            set: { task.dueDate = $0; storeEnv.scheduleTaskNotification(for: task) }
+        ), displayedComponents: [.date, .hourAndMinute])
+    }
+    
+    private var recurrencePicker: some View {
+        Picker("التكرار", selection: Binding(
+            get: { task.recurrence },
+            set: { task.recurrence = $0; storeEnv.scheduleTaskNotification(for: task) }
+        )) {
+            ForEach(TaskRecurrence.allCases) { r in
+                HStack {
+                    Image(systemName: r.symbol)
+                    Text(r.title)
+                }.tag(r)
+            }
+        }
+    }
+    
+    private var dailyToggle: some View {
+        Toggle(task.isInDaily ? "موجودة في اليومي" : "إضافة إلى اليومي", isOn: Binding(
+            get: { task.isInDaily },
+            set: { onToggleDaily($0) }
+        ))
+    }
+    
+    private var completionToggle: some View {
+        Toggle("منجزة", isOn: $task.isDone)
+            .onChange(of: task.isDone) { _, newValue in
+                if newValue {
+                    for i in task.steps.indices {
+                        task.steps[i].isDone = true
+                        task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
+                    }
+                }
+            }
     }
     
     private var attachmentsSection: some View {
@@ -1367,46 +1556,51 @@ struct TaskDetailView: View {
         }
     }
     
+    // MARK: - Steps Section
     private var stepsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("الخطوات الفرعية", systemImage: "list.bullet").font(.headline)
+                Label("الخطوات", systemImage: "list.bullet").font(.headline)
                 Spacer()
-                Button { 
-                    if !newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        task.steps.append(TaskStep(title: newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)))
-                        newStepTitle = ""
-                    }
+                Button {
+                    let title = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { return }
+                    task.steps.append(TaskStep(title: title))
+                    newStepTitle = ""
                 } label: { Label("إضافة", systemImage: "plus.circle.fill") }
-                    .disabled(newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             TextField("خطوة جديدة", text: $newStepTitle)
                 .textFieldStyle(.roundedBorder)
                 .submitLabel(.done)
                 .onSubmit {
-                    if !newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        task.steps.append(TaskStep(title: newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)))
-                        newStepTitle = ""
-                    }
+                    let title = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { return }
+                    task.steps.append(TaskStep(title: title))
+                    newStepTitle = ""
                 }
             if task.steps.isEmpty {
-                Text("لا توجد خطوات فرعية").foregroundStyle(.secondary).font(.subheadline)
+                Text("لا توجد خطوات").foregroundStyle(.secondary).font(.subheadline)
             } else {
-                ForEach($task.steps) { $step in
+                ForEach(task.steps.indices, id: \.self) { index in
                     HStack {
                         Button {
-                            step.isDone.toggle()
-                            step.completedAt = step.isDone ? Date() : nil
+                            task.steps[index].isDone.toggle()
+                            if task.steps[index].isDone {
+                                task.steps[index].completedAt = Date()
+                            } else {
+                                task.steps[index].completedAt = nil
+                            }
                         } label: {
-                            Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(step.isDone ? .green : .secondary)
+                            Image(systemName: task.steps[index].isDone ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(task.priority.color)
                         }
                         .buttonStyle(.plain)
-                        Text(step.title)
-                            .strikethrough(step.isDone, color: .secondary)
-                            .foregroundStyle(step.isDone ? .secondary : .primary)
+                        Text(task.steps[index].title)
+                            .strikethrough(task.steps[index].isDone, color: .secondary)
+                            .foregroundStyle(task.steps[index].isDone ? .secondary : .primary)
                         Spacer()
-                        if step.isDone, let completedAt = step.completedAt {
+                        if let completedAt = task.steps[index].completedAt {
                             Text(shortDate(completedAt))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -1417,7 +1611,7 @@ struct TaskDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            task.steps.removeAll { $0.id == step.id }
+                            task.steps.remove(at: index)
                         } label: {
                             Label("حذف", systemImage: "trash")
                         }
@@ -1428,6 +1622,7 @@ struct TaskDetailView: View {
         .padding(.horizontal)
     }
     
+    // MARK: - Notes Section
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("ملاحظات", systemImage: "square.and.pencil").font(.headline)
@@ -1493,6 +1688,8 @@ struct SettingsView: View {
     @State private var shareItem: ShareItem? = nil
     @State private var isImporterPresented: Bool = false
     @State private var importError: Bool = false
+    @State private var importErrorMessage: String = ""
+    @State private var importSuccess: Bool = false
     @State private var exportError: Bool = false
     @State private var exportErrorMessage: String = ""
     @State private var showDocumentsBrowser: Bool = false
@@ -1500,98 +1697,295 @@ struct SettingsView: View {
     @State private var previewURLsFromDocs: [URL] = []
     @State private var showPreviewFromDocs: Bool = false
     
+    @State private var showCleanupConfirm: Bool = false
+    @State private var showCleanupResult: Bool = false
+    @State private var cleanupResultMessage: String = ""
+    @State private var unusedAttachmentsCount: Int = 0
+    
     var body: some View {
         NavigationStack {
             Form {
-                Section("الإشعارات") {
-                    Toggle("تفعيل الإشعارات", isOn: $store.notificationsEnabled)
-                    DatePicker("وقت التذكير اليومي", selection: $store.dailyReminderTime, displayedComponents: .hourAndMinute)
-                    Button("اختبار إشعار الآن") { store.scheduleTestNotification() }
-                }
-                .onChange(of: store.notificationsEnabled) { _, newVal in
-                    if newVal { store.requestNotificationAuthorizationIfNeeded(); store.scheduleDailyReminder(at: store.dailyReminderTime) }
-                    else { store.cancelScheduledDailyAtTime() }
-                }
-                .onChange(of: store.dailyReminderTime) { _, new in
-                    if store.notificationsEnabled { store.scheduleDailyReminder(at: new) }
-                }
-                
-                Section("النسخ الاحتياطي والاستعادة") {
-                    Button("تصدير البيانات كـ JSON") {
-                        if let url = store.exportData() { shareItem = ShareItem(url: url) }
-                        else { exportErrorMessage = "تعذر إنشاء ملف JSON للتصدير."; exportError = true }
-                    }
-                    .disabled(store.pages.isEmpty)
-                    Button("نسخة احتياطية كاملة (ZIP)") {
-                        if let url = store.exportFullBackupZIP() { shareItem = ShareItem(url: url) }
-                        else { exportErrorMessage = "تعذر إنشاء ملف ZIP. تأكد من إضافة ZIPFoundation."; exportError = true }
-                    }
-                    Button("فتح مجلد الحفظ في الملفات") { showDocumentsBrowser = true }
-                        .buttonStyle(.borderedProminent).tint(.accentColor)
-                        .sheet(isPresented: $showDocumentsBrowser) {
-                            DocumentsBrowserView { pickedURL in
-                                let ext = pickedURL.pathExtension.lowercased()
-                                if ["png","jpg","jpeg","heic"].contains(ext) {
-                                    previewURLsFromDocs = [pickedURL]; showPreviewFromDocs = true
-                                } else {
-                                    shareItem = ShareItem(url: pickedURL)
-                                }
-                            }
-                            .ignoresSafeArea()
-                        }
-                    Text("يمكنك تصفح جميع المرفقات والملفات من خلال مجلد التطبيق في تطبيق الملفات.")
-                        .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
-                }
-                .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
-                    switch result {
-                    case .success(let urls):
-                        if let url = urls.first {
-                            let _ = url.startAccessingSecurityScopedResource()
-                            defer { url.stopAccessingSecurityScopedResource() }
-                            do { try store.importBackup(from: url) } catch { importError = true }
-                        }
-                    case .failure: break
-                    }
-                }
-                .alert("فشل الاستيراد", isPresented: $importError) { Button("حسنًا", role: .cancel) { } } message: { Text("تعذر استيراد الملف. تأكد أن الصيغة JSON أو ZIP صحيحة.") }
-                .alert("فشل التصدير", isPresented: $exportError) { Button("حسنًا", role: .cancel) { } } message: { Text(exportErrorMessage.isEmpty ? "حدث خطأ غير معروف أثناء التصدير." : exportErrorMessage) }
-                
-                Section {
-                    Toggle(isOn: $store.deleteAttachmentFilesOnRemove) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("حذف ملف المرفق عند الإزالة")
-                            Text("عند التفعيل: سيُحذف الملف الفعلي من التخزين عند إزالة المرفق من المهمة.")
-                                .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                } footer: { Text("يساعد هذا الخيار على توفير المساحة ومنع تراكم ملفات غير مستخدمة داخل التطبيق.") }
-                
-                Section("حول التطبيق") {
-                    Link("سياسة الخصوصية", destination: URL(string: "https://example.com/privacy")!)
-                    Text("البيانات تحفظ محليًا على جهازك. لا توجد خوادم.").font(.footnote).foregroundStyle(.secondary)
-                }
+                notificationsSection
+                backupSection
+                attachmentDeletionSection
+                cleanupSection
+                aboutSection
             }
             .navigationTitle("الإعدادات")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
+            .onAppear {
+                updateUnusedAttachmentsCount()
+            }
             .sheet(item: $shareItem) { item in
                 ShareLink(item: item.url) { Label("مشاركة الملف", systemImage: "square.and.arrow.up") }
                     .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $showPreviewFromDocs) {
-                NavigationStack {
-                    QLPreview(urls: previewURLsFromDocs)
-                        .ignoresSafeArea()
-                        .navigationTitle("معاينة")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            if let url = previewURLsFromDocs.first {
-                                ToolbarItem(placement: .topBarTrailing) { ShareLink(item: url) { Image(systemName: "square.and.arrow.up") } }
-                                ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { showPreviewFromDocs = false } }
-                            }
-                        }
-                }
+                previewSheet
             }
         }
+    }
+    
+    // MARK: - Notifications Section
+    private var notificationsSection: some View {
+        Section("الإشعارات") {
+            Toggle("تفعيل الإشعارات", isOn: $store.notificationsEnabled)
+            DatePicker("وقت التذكير اليومي", selection: $store.dailyReminderTime, displayedComponents: .hourAndMinute)
+            Button("اختبار إشعار الآن") { store.scheduleTestNotification() }
+        }
+        .onChange(of: store.notificationsEnabled) { _, newVal in
+            if newVal { 
+                store.requestNotificationAuthorizationIfNeeded()
+                store.scheduleDailyReminder(at: store.dailyReminderTime)
+            } else { 
+                store.cancelScheduledDailyAtTime()
+            }
+        }
+        .onChange(of: store.dailyReminderTime) { _, new in
+            if store.notificationsEnabled { store.scheduleDailyReminder(at: new) }
+        }
+    }
+    
+    // MARK: - Backup Section
+    private var backupSection: some View {
+        Section("النسخ الاحتياطي والاستعادة") {
+            exportButtons
+            importButtons
+            helpText
+        }
+        .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+            handleImportResult(result)
+        }
+        .alert("فشل الاستيراد", isPresented: $importError) {
+            Button("حسنًا", role: .cancel) { }
+        } message: {
+            Text(importErrorMessage.isEmpty ? "تعذر استيراد الملف. تأكد أن الصيغة JSON أو ZIP صحيحة." : importErrorMessage)
+        }
+        .alert("نجح الاستيراد", isPresented: $importSuccess) {
+            Button("حسنًا", role: .cancel) { }
+        } message: {
+            Text("تم استعادة البيانات والمرفقات بنجاح!")
+        }
+        .alert("فشل التصدير", isPresented: $exportError) {
+            Button("حسنًا", role: .cancel) { }
+        } message: {
+            Text(exportErrorMessage.isEmpty ? "حدث خطأ غير معروف أثناء التصدير." : exportErrorMessage)
+        }
+    }
+    
+    private var exportButtons: some View {
+        Group {
+            Button("نسخة احتياطية كاملة (ZIP)") {
+                if let url = store.exportFullBackupZIP() { 
+                    shareItem = ShareItem(url: url)
+                } else { 
+                    exportErrorMessage = "تعذر إنشاء ملف ZIP. تأكد من إضافة ZIPFoundation."
+                    exportError = true
+                }
+            }
+            .disabled(store.pages.isEmpty)
+            
+            Button("تصدير البيانات فقط (JSON)") {
+                if let url = store.exportData() { 
+                    shareItem = ShareItem(url: url)
+                } else { 
+                    exportErrorMessage = "تعذر إنشاء ملف JSON للتصدير."
+                    exportError = true
+                }
+            }
+            .disabled(store.pages.isEmpty)
+        }
+    }
+    
+    private var importButtons: some View {
+        Group {
+            Button("استيراد نسخة احتياطية") {
+                isImporterPresented = true
+            }
+            .buttonStyle(.borderedProminent)
+            
+            Button("فتح مجلد الحفظ في الملفات") { 
+                showDocumentsBrowser = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.accentColor)
+            .sheet(isPresented: $showDocumentsBrowser) {
+                DocumentsBrowserView { pickedURL in
+                    handleDocumentsBrowserPick(pickedURL)
+                }
+                .ignoresSafeArea()
+            }
+        }
+    }
+    
+    private var helpText: some View {
+        Text("• النسخة الكاملة (ZIP) تحتوي على البيانات والمرفقات\n• تصدير JSON يحفظ البيانات فقط بدون المرفقات\n• يمكنك تصفح جميع الملفات من خلال مجلد التطبيق")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+    }
+    
+    // MARK: - Attachment Deletion Section
+    private var attachmentDeletionSection: some View {
+        Section {
+            Toggle(isOn: $store.deleteAttachmentFilesOnRemove) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("حذف ملف المرفق عند الإزالة")
+                    Text("عند التفعيل: سيُحذف الملف الفعلي من التخزين عند إزالة المرفق من المهمة.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } footer: { 
+            Text("يساعد هذا الخيار على توفير المساحة ومنع تراكم ملفات غير مستخدمة داخل التطبيق.")
+        }
+    }
+    
+    // MARK: - Cleanup Section
+    private var cleanupSection: some View {
+        Section {
+            cleanupDescription
+            cleanupButton
+        } header: {
+            Text("صيانة المرفقات")
+        } footer: {
+            Text("الملفات غير المستخدمة: \(unusedAttachmentsCount)")
+        }
+        .alert("تأكيد التنظيف", isPresented: $showCleanupConfirm) {
+            Button("حذف", role: .destructive) {
+                performCleanup()
+            }
+            Button("إلغاء", role: .cancel) { }
+        } message: {
+            Text("سيتم حذف \(unusedAttachmentsCount) ملف غير مرتبط بأي مهمة بشكل نهائي. هل أنت متأكد؟")
+        }
+        .alert("نتيجة التنظيف", isPresented: $showCleanupResult) {
+            Button("حسنًا", role: .cancel) { }
+        } message: {
+            Text(cleanupResultMessage)
+        }
+    }
+    
+    private var cleanupDescription: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("تنظيف المرفقات غير المستخدمة")
+                Text("حذف الملفات الموجودة في المجلد لكنها غير مرتبطة بأي مهمة")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if unusedAttachmentsCount > 0 {
+                Text("\(unusedAttachmentsCount)")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red)
+                    .clipShape(Capsule())
+            }
+        }
+    }
+    
+    private var cleanupButton: some View {
+        Button(role: .destructive) {
+            showCleanupConfirm = true
+        } label: {
+            Label("تنظيف الآن", systemImage: "trash.circle.fill")
+        }
+        .disabled(unusedAttachmentsCount == 0)
+    }
+    
+    // MARK: - About Section
+    private var aboutSection: some View {
+        Section("حول التطبيق") {
+            Link("سياسة الخصوصية", destination: URL(string: "https://example.com/privacy")!)
+            Text("البيانات تحفظ محليًا على جهازك. لا توجد خوادم.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+    
+    // MARK: - Preview Sheet
+    private var previewSheet: some View {
+        NavigationStack {
+            QLPreview(urls: previewURLsFromDocs)
+                .ignoresSafeArea()
+                .navigationTitle("معاينة")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    if let url = previewURLsFromDocs.first {
+                        ToolbarItem(placement: .topBarTrailing) { 
+                            ShareLink(item: url) { 
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                        }
+                        ToolbarItem(placement: .cancellationAction) { 
+                            Button("إغلاق") { 
+                                showPreviewFromDocs = false
+                            }
+                        }
+                    }
+                }
+        }
+    }
+    
+    // MARK: - Helper Methods
+    private func handleImportResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            if let url = urls.first {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    try store.importBackup(from: url)
+                    importSuccess = true
+                } catch {
+                    importErrorMessage = error.localizedDescription
+                    importError = true
+                }
+            }
+        case .failure(let error):
+            importErrorMessage = error.localizedDescription
+            importError = true
+        }
+    }
+    
+    private func handleDocumentsBrowserPick(_ pickedURL: URL) {
+        let ext = pickedURL.pathExtension.lowercased()
+        if ["png","jpg","jpeg","heic"].contains(ext) {
+            previewURLsFromDocs = [pickedURL]
+            showPreviewFromDocs = true
+        } else {
+            shareItem = ShareItem(url: pickedURL)
+        }
+    }
+    
+    private func performCleanup() {
+        let result = store.cleanUnusedAttachments()
+        let sizeInKB = result.freedSpace / 1024
+        let sizeInMB = Double(result.freedSpace) / (1024 * 1024)
+        
+        if result.deletedCount > 0 {
+            if sizeInMB >= 1 {
+                cleanupResultMessage = "تم حذف \(result.deletedCount) ملف غير مستخدم\nتم تحرير \(String(format: "%.2f", sizeInMB)) MB"
+            } else {
+                cleanupResultMessage = "تم حذف \(result.deletedCount) ملف غير مستخدم\nتم تحرير \(sizeInKB) KB"
+            }
+        } else {
+            cleanupResultMessage = "لا توجد ملفات غير مستخدمة للحذف"
+        }
+        
+        showCleanupResult = true
+        updateUnusedAttachmentsCount()
+    }
+    
+    private func updateUnusedAttachmentsCount() {
+        unusedAttachmentsCount = store.countUnusedAttachments()
     }
 }
 
@@ -1672,28 +2066,28 @@ struct QLPreview: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Document Scanner (VisionKit)
+// MARK: - Document Scanner wrapper
 
 struct DocumentScannerView: UIViewControllerRepresentable {
-    var onScanCompleted: ([UIImage]) -> Void
+    var onScan: ([UIImage]) -> Void
     
     func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
-        let scanner = VNDocumentCameraViewController()
-        scanner.delegate = context.coordinator
-        return scanner
+        let controller = VNDocumentCameraViewController()
+        controller.delegate = context.coordinator
+        return controller
     }
     
     func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScanCompleted: onScanCompleted)
+        Coordinator(onScan: onScan)
     }
     
     final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
-        let onScanCompleted: ([UIImage]) -> Void
+        let onScan: ([UIImage]) -> Void
         
-        init(onScanCompleted: @escaping ([UIImage]) -> Void) {
-            self.onScanCompleted = onScanCompleted
+        init(onScan: @escaping ([UIImage]) -> Void) {
+            self.onScan = onScan
         }
         
         func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
@@ -1702,7 +2096,7 @@ struct DocumentScannerView: UIViewControllerRepresentable {
                 images.append(scan.imageOfPage(at: i))
             }
             controller.dismiss(animated: true)
-            onScanCompleted(images)
+            onScan(images)
         }
         
         func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
