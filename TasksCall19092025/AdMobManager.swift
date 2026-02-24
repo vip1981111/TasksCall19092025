@@ -1,0 +1,134 @@
+//
+//  AdMobManager.swift
+//  TasksCall19092025 (أنجز)
+//
+//  إدارة إعلانات Google AdMob
+//
+
+import SwiftUI
+import Combine
+import GoogleMobileAds
+
+// MARK: - Ad Unit IDs
+struct AdConfig {
+    // ⚠️ هذه معرفات اختبارية — غيّرها بمعرفاتك الحقيقية قبل النشر
+    #if DEBUG
+    static let bannerAdUnitID = "ca-app-pub-3940256099942544/2435281174" // Test Banner
+    static let interstitialAdUnitID = "ca-app-pub-3940256099942544/4411468910" // Test Interstitial
+    #else
+    static let bannerAdUnitID = "ca-app-pub-2246849300811913/2034108997"
+    static let interstitialAdUnitID = "ca-app-pub-2246849300811913/3798509006"
+    #endif
+}
+
+// MARK: - Banner Ad View (SwiftUI)
+struct BannerAdView: UIViewRepresentable {
+    let adUnitID: String
+
+    init(adUnitID: String = AdConfig.bannerAdUnitID) {
+        self.adUnitID = adUnitID
+    }
+
+    func makeUIView(context: Context) -> GADBannerView {
+        let bannerView = GADBannerView(adSize: GADAdSizeFromCGSize(CGSize(width: 320, height: 50)))
+        bannerView.adUnitID = adUnitID
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            bannerView.rootViewController = rootVC
+        }
+        bannerView.load(GADRequest())
+        return bannerView
+    }
+
+    func updateUIView(_ uiView: GADBannerView, context: Context) {}
+}
+
+// MARK: - Adaptive Banner Ad View
+struct AdaptiveBannerAdView: UIViewRepresentable {
+    let adUnitID: String
+
+    init(adUnitID: String = AdConfig.bannerAdUnitID) {
+        self.adUnitID = adUnitID
+    }
+
+    func makeUIView(context: Context) -> GADBannerView {
+        let bannerView = GADBannerView()
+        bannerView.adUnitID = adUnitID
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            bannerView.rootViewController = rootVC
+            let frame = rootVC.view.frame.inset(by: rootVC.view.safeAreaInsets)
+            let viewWidth = frame.size.width
+            bannerView.adSize = GADCurrentOrientationAnchoredAdaptiveBannerAdSizeWithWidth(viewWidth)
+        }
+        bannerView.load(GADRequest())
+        return bannerView
+    }
+
+    func updateUIView(_ uiView: GADBannerView, context: Context) {}
+}
+
+// MARK: - Interstitial Ad Manager
+@MainActor
+final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenContentDelegate {
+    @Published var isAdReady: Bool = false
+    private var interstitialAd: GADInterstitialAd?
+    private var adShownCount: Int = 0
+
+    // عرض الإعلان كل 3 أفعال (مثلاً كل 3 مهام مكتملة)
+    var showEveryNActions: Int = 3
+
+    override init() {
+        super.init()
+        // ⚠️ لا نحمّل الإعلان هنا — ننتظر حتى يتم تهيئة AdMob بعد ATT
+        // يتم استدعاء loadAd() من TasksCall19092025App بعد الحصول على رد ATT
+    }
+
+    func loadAd() {
+        GADInterstitialAd.load(withAdUnitID: AdConfig.interstitialAdUnitID, request: GADRequest()) { [weak self] ad, error in
+            guard let self = self else { return }
+            if error != nil {
+                self.isAdReady = false
+                return
+            }
+            self.interstitialAd = ad
+            self.interstitialAd?.fullScreenContentDelegate = self
+            self.isAdReady = true
+        }
+    }
+
+    /// يُستدعى عند إكمال مهمة — يعرض الإعلان كل N أفعال
+    func trackAction() {
+        adShownCount += 1
+        if adShownCount >= showEveryNActions {
+            showAd()
+            adShownCount = 0
+        }
+    }
+
+    func showAd() {
+        guard let ad = interstitialAd else {
+            loadAd()
+            return
+        }
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            ad.present(fromRootViewController: rootVC)
+        }
+    }
+
+    // MARK: - GADFullScreenContentDelegate
+    nonisolated func adDidDismissFullScreenContent(_ ad: GADFullScreenPresentingAd) {
+        Task { @MainActor in
+            self.isAdReady = false
+            self.loadAd() // تحميل إعلان جديد
+        }
+    }
+
+    nonisolated func ad(_ ad: GADFullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
+        Task { @MainActor in
+            self.isAdReady = false
+            self.loadAd()
+        }
+    }
+}

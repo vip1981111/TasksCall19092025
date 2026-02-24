@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A8CA71C02EA24EDD00BEAE4A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A8CA71BF2EA24EDD00BEAE4A /* ZIPFoundation */; };
+		B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B1AD000200000002DEADBEEF /* GoogleMobileAds */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A8CA71C02EA24EDD00BEAE4A /* ZIPFoundation in Frameworks */,
+				B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +86,7 @@
 			name = TasksCall19092025;
 			packageProductDependencies = (
 				A8CA71BF2EA24EDD00BEAE4A /* ZIPFoundation */,
+				B1AD000200000002DEADBEEF /* GoogleMobileAds */,
 			);
 			productName = TasksCall19092025;
 			productReference = A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */;
@@ -109,12 +112,14 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				ar,
 				Base,
 			);
 			mainGroup = A82507072E7DBB5800F6ADE8;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A8CA71BE2EA24EDD00BEAE4A /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A82507112E7DBB5800F6ADE8 /* Products */;
@@ -200,7 +205,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -258,7 +263,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -274,16 +279,16 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TasksCall19092025/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "نحتاج للوصول الى الصور لارفاقها بالمهام";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs camera access to scan documents and capture photos for task attachments.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "This app needs photo library access to save scanned documents and images.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "This app needs photo library access to attach images to your tasks.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -293,8 +298,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.-MushafGreen.TasksCall19092025";
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -312,16 +317,16 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7UJER5RN6Y;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TasksCall19092025/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "مهامي اليومية";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "يحتاج التطبيق الكاميرا  لمسح المستندات ضوئيا";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "نحتاج للوصول الى الصور لارفاقها بالمهام";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "نحتاج للوصول إلى الصور لإرفاقها بالمهام";
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app needs camera access to scan documents and capture photos for task attachments.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "This app needs photo library access to save scanned documents and images.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "This app needs photo library access to attach images to your tasks.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -331,8 +336,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.-MushafGreen.TasksCall19092025";
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -376,6 +381,14 @@
 				minimumVersion = 0.9.20;
 			};
 		};
+		B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -383,6 +396,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A8CA71BE2EA24EDD00BEAE4A /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		B1AD000200000002DEADBEEF /* GoogleMobileAds */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			productName = GoogleMobileAds;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

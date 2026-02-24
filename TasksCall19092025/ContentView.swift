@@ -18,9 +18,9 @@ import ZIPFoundation // للنسخة الاحتياطية الكاملة (ZIP)
 
 // MARK: - ثابت ألوان الأولوية (sRGB)
 extension Color {
-    static let prLow  = Color(red: 0.18, green: 0.70, blue: 0.36)
-    static let prMed  = Color(red: 1.00, green: 0.55, blue: 0.00)
-    static let prHigh = Color(red: 0.90, green: 0.23, blue: 0.19)
+    static let prLow  = Color(red: 0.18, green: 0.70, blue: 0.36)  // أخضر
+    static let prMed  = Color(red: 1.00, green: 0.55, blue: 0.00)  // برتقالي
+    static let prHigh = Color(red: 0.70, green: 0.00, blue: 0.00)  // أحمر غامق
 }
 
 // MARK: - Model
@@ -107,22 +107,62 @@ struct TaskAttachment: Identifiable, Hashable, Codable {
     }
 }
 
+// MARK: - خيارات التذكير قبل الموعد
+enum ReminderBefore: Int, Codable, CaseIterable, Identifiable {
+    case none = 0
+    case fiveMinutes = 5
+    case tenMinutes = 10
+    case fifteenMinutes = 15
+    case thirtyMinutes = 30
+    case oneHour = 60
+    case twoHours = 120
+    case oneDay = 1440
+    case twoDays = 2880
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: return "عند الموعد"
+        case .fiveMinutes: return "قبل 5 دقائق"
+        case .tenMinutes: return "قبل 10 دقائق"
+        case .fifteenMinutes: return "قبل 15 دقيقة"
+        case .thirtyMinutes: return "قبل 30 دقيقة"
+        case .oneHour: return "قبل ساعة"
+        case .twoHours: return "قبل ساعتين"
+        case .oneDay: return "قبل يوم"
+        case .twoDays: return "قبل يومين"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .none: return "bell.fill"
+        case .fiveMinutes, .tenMinutes, .fifteenMinutes, .thirtyMinutes: return "bell.badge"
+        case .oneHour, .twoHours: return "clock.badge"
+        case .oneDay, .twoDays: return "calendar.badge.clock"
+        }
+    }
+}
+
 struct TaskItem: Identifiable, Hashable, Codable {
     let id: UUID
     var title: String
     var isDone: Bool
     var priority: TaskPriority
-    
+
     var createdAt: Date
     var recurrence: TaskRecurrence
-    var dueDate: Date?
+    var recurrenceTime: Date?  // وقت التكرار المستقل
+    var dueDate: Date?         // تاريخ ووقت التذكير
+    var reminderBefore: ReminderBefore
     var steps: [TaskStep]
     var notes: String
     var attachments: [TaskAttachment]
-    
+
     var isInDaily: Bool
     var addedToDailyAt: Date?
-    
+
     init(
         id: UUID = UUID(),
         title: String,
@@ -130,7 +170,9 @@ struct TaskItem: Identifiable, Hashable, Codable {
         priority: TaskPriority = .medium,
         createdAt: Date = Date(),
         recurrence: TaskRecurrence = .none,
+        recurrenceTime: Date? = nil,
         dueDate: Date? = nil,
+        reminderBefore: ReminderBefore = .none,
         steps: [TaskStep] = [],
         notes: String = "",
         attachments: [TaskAttachment] = [],
@@ -143,7 +185,9 @@ struct TaskItem: Identifiable, Hashable, Codable {
         self.priority = priority
         self.createdAt = createdAt
         self.recurrence = recurrence
+        self.recurrenceTime = recurrenceTime
         self.dueDate = dueDate
+        self.reminderBefore = reminderBefore
         self.steps = steps
         self.notes = notes
         self.attachments = attachments
@@ -372,49 +416,79 @@ final class TasksStore: ObservableObject {
         }
     }
     
-    // MARK: - إشعار مخصص لكل مهمة
+    // MARK: - إشعارات مخصصة لكل مهمة (تذكير + تكرار مستقلين)
+    private func earlyNotificationIdentifier(for taskID: UUID) -> String { "task-early-\(taskID.uuidString)" }
+    private func recurrenceNotificationIdentifier(for taskID: UUID) -> String { "task-recurrence-\(taskID.uuidString)" }
+
     func scheduleTaskNotification(for task: TaskItem) {
         guard notificationsEnabled else { return }
-        if task.recurrence == .none, task.dueDate == nil {
-            cancelTaskNotification(taskID: task.id)
-            return
-        }
-        let date = task.dueDate ?? Date()
-        guard let dc = triggerComponents(for: task.recurrence, dueDate: date) else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "تذكير مهمة"
-        content.body = task.title
-        content.sound = .default
-        let repeats = task.recurrence != .none
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: repeats)
         cancelTaskNotification(taskID: task.id)
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: taskNotificationIdentifier(for: task.id), content: content, trigger: trigger)) { _ in }
+
+        // ١) إشعار التذكير (مرة واحدة — حسب dueDate)
+        if let dueDate = task.dueDate {
+            let dc = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
+            let content = UNMutableNotificationContent()
+            content.title = "تذكير مهمة"
+            content.body = task.title
+            content.sound = .default
+            let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: false)
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: taskNotificationIdentifier(for: task.id), content: content, trigger: trigger)) { _ in }
+
+            // إشعار مبكر (تذكير قبل الموعد)
+            if task.reminderBefore != .none {
+                let earlyDate = dueDate.addingTimeInterval(-Double(task.reminderBefore.rawValue) * 60)
+                if earlyDate > Date() {
+                    let earlyContent = UNMutableNotificationContent()
+                    earlyContent.title = "تذكير قادم"
+                    earlyContent.body = "\(task.reminderBefore.title): \(task.title)"
+                    earlyContent.sound = .default
+                    let earlyComps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: earlyDate)
+                    let earlyTrigger = UNCalendarNotificationTrigger(dateMatching: earlyComps, repeats: false)
+                    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: earlyNotificationIdentifier(for: task.id), content: earlyContent, trigger: earlyTrigger)) { _ in }
+                }
+            }
+        }
+
+        // ٢) إشعار التكرار (مستقل — حسب recurrenceTime)
+        if task.recurrence != .none, let recTime = task.recurrenceTime {
+            guard let dc = recurrenceTriggerComponents(for: task.recurrence, baseDate: recTime) else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "تكرار مهمة"
+            content.body = "📋 \(task.title) — \(task.recurrence.title)"
+            content.sound = .default
+            let trigger = UNCalendarNotificationTrigger(dateMatching: dc, repeats: true)
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: recurrenceNotificationIdentifier(for: task.id), content: content, trigger: trigger)) { _ in }
+        }
     }
+
     func cancelTaskNotification(taskID: UUID) {
-        let id = taskNotificationIdentifier(for: taskID)
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [id])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
+        let ids = [
+            taskNotificationIdentifier(for: taskID),
+            earlyNotificationIdentifier(for: taskID),
+            recurrenceNotificationIdentifier(for: taskID)
+        ]
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
     }
-    private func triggerComponents(for recurrence: TaskRecurrence, dueDate: Date) -> DateComponents? {
+
+    private func recurrenceTriggerComponents(for recurrence: TaskRecurrence, baseDate: Date) -> DateComponents? {
         let cal = Calendar.current
         switch recurrence {
         case .none:
-            let c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
-            if c.year == nil || c.month == nil || c.day == nil { return nil }
-            return c
+            return nil
         case .daily:
             var c = DateComponents()
-            let base = cal.dateComponents([.hour, .minute], from: dueDate)
+            let base = cal.dateComponents([.hour, .minute], from: baseDate)
             c.hour = base.hour; c.minute = base.minute
             return c
         case .weekly:
             var c = DateComponents()
-            let base = cal.dateComponents([.weekday, .hour, .minute], from: dueDate)
+            let base = cal.dateComponents([.weekday, .hour, .minute], from: baseDate)
             c.weekday = base.weekday; c.hour = base.hour; c.minute = base.minute
             return c
         case .monthly:
             var c = DateComponents()
-            let base = cal.dateComponents([.day, .hour, .minute], from: dueDate)
+            let base = cal.dateComponents([.day, .hour, .minute], from: baseDate)
             c.day = base.day; c.hour = base.hour; c.minute = base.minute
             return c
         }
@@ -440,10 +514,16 @@ final class TasksStore: ObservableObject {
     func exportFullBackupZIP() -> URL? {
         let fm = FileManager.default
         let zipURL = fm.temporaryDirectory.appendingPathComponent("TasksBackup-\(UUID().uuidString).zip")
-        let archive: Archive
-        do {
-            archive = try Archive(url: zipURL, accessMode: .create)
-        } catch {
+        
+
+        
+        // حذف ملف ZIP القديم إذا كان موجودًا
+        if fm.fileExists(atPath: zipURL.path) {
+            try? fm.removeItem(at: zipURL)
+        }
+        
+        guard let archive = Archive(url: zipURL, accessMode: .create, preferredEncoding: nil) else {
+
             return nil
         }
         
@@ -453,12 +533,18 @@ final class TasksStore: ObservableObject {
             let tempJSON = fm.temporaryDirectory.appendingPathComponent("tasks_pages-\(UUID().uuidString).json")
             try data.write(to: tempJSON, options: .atomic)
             defer { try? fm.removeItem(at: tempJSON) }
+            
             try archive.addEntry(with: "tasks_pages.json", fileURL: tempJSON, compressionMethod: .deflate)
-        } catch { return nil }
+
+        } catch {
+
+            return nil
+        }
         
         // حفظ جميع المرفقات
         var usedNames = Set<String>()
         var savedAttachments = 0
+        var totalAttachments = 0
         
         func uniqueName(_ name: String) -> String {
             if !usedNames.contains(name) { usedNames.insert(name); return name }
@@ -472,35 +558,66 @@ final class TasksStore: ObservableObject {
             }
         }
         
+        // عد المرفقات أولاً
+        for page in pages {
+            for task in page.tasks {
+                totalAttachments += task.attachments.count
+            }
+        }
+        
+
+        
         for page in pages {
             for task in page.tasks {
                 for att in task.attachments {
                     let src = att.fileURL
-                    guard fm.fileExists(atPath: src.path) else { continue }
-                    let name = uniqueName(src.lastPathComponent)
                     
+                    
+                    guard fm.fileExists(atPath: src.path) else {
+
+                        continue
+                    }
+                    
+                    // التحقق من أن الملف قابل للقراءة
+                    guard let fileSize = try? fm.attributesOfItem(atPath: src.path)[.size] as? Int64, fileSize > 0 else {
+
+                        continue
+                    }
+                    
+
+                    
+                    let name = uniqueName(src.lastPathComponent)
+                    let entryPath = "Attachments/\(name)"
+                    
+                    // محاولة الحفظ مباشرة من URL
                     do {
-                        try archive.addEntry(with: "Attachments/\(name)", fileURL: src, compressionMethod: .deflate)
+                        try archive.addEntry(with: entryPath, fileURL: src, compressionMethod: .deflate)
                         savedAttachments += 1
+
                     } catch {
+
+                        
                         // محاولة بديلة باستخدام Data
-                        if let d = try? Data(contentsOf: src) {
-                            let size = Int64(d.count)
-                            do {
-                                try archive.addEntry(with: "Attachments/\(name)", type: .file, uncompressedSize: size, compressionMethod: .deflate, provider: { (position: Int64, size: Int) -> Data in
-                                    let start = Int(position)
-                                    let end = min(start + size, d.count)
-                                    return d.subdata(in: start..<end)
-                                })
-                                savedAttachments += 1
-                            } catch { }
+                        do {
+                            let data = try Data(contentsOf: src)
+
+                            
+                            try archive.addEntry(with: entryPath, type: .file, uncompressedSize: Int64(data.count), compressionMethod: .deflate) { position, size in
+                                let start = Int(position)
+                                let end = min(start + size, data.count)
+                                return data.subdata(in: start..<end)
+                            }
+                            savedAttachments += 1
+
+                        } catch {
+
                         }
                     }
                 }
             }
         }
         
-        print("✅ تم حفظ \(savedAttachments) مرفق في النسخة الاحتياطية")
+        
         return zipURL
     }
 
@@ -516,34 +633,66 @@ final class TasksStore: ObservableObject {
             let destRoot = fm.temporaryDirectory.appendingPathComponent("Restore-\(UUID().uuidString)")
             try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
             
-            let archive: Archive
-            do {
-                archive = try Archive(url: url, accessMode: .read)
-            } catch {
-                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey:"تعذر فتح ملف ZIP: \(error.localizedDescription)"])
+            
+            guard let archive = Archive(url: url, accessMode: .read, preferredEncoding: nil) else {
+                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey: "تعذر فتح ملف ZIP"])
             }
             
+           
+            
             // استخراج جميع الملفات من ZIP
+            var extractedCount = 0
             for entry in archive {
                 let outURL = destRoot.appendingPathComponent(entry.path)
                 let parent = outURL.deletingLastPathComponent()
-                try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
-                _ = try archive.extract(entry, to: outURL)
+                
+                // إنشاء المجلد الأب إذا لم يكن موجودًا
+                if !fm.fileExists(atPath: parent.path) {
+                    try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+                }
+                
+                // استخراج الملف
+                do {
+                    _ = try archive.extract(entry, to: outURL, skipCRC32: false)
+                    extractedCount += 1
+
+                } catch {
+
+                }
             }
+            
+//            print("📦 تم استخراج \(extractedCount) من \(archive.count) عنصر")
             
             // استيراد البيانات من JSON
             let jsonURL = destRoot.appendingPathComponent("tasks_pages.json")
+            guard fm.fileExists(atPath: jsonURL.path) else {
+                throw NSError(domain: "import", code: -3, userInfo: [NSLocalizedDescriptionKey: "لم يتم العثور على ملف البيانات tasks_pages.json"]) as NSError
+            }
+            
             let data = try Data(contentsOf: jsonURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
+
             
             // استعادة المرفقات إلى مجلد Documents
             let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
             let attachmentsSrc = destRoot.appendingPathComponent("Attachments")
             var restoredAttachments = 0
             
+
+            
             if fm.fileExists(atPath: attachmentsSrc.path) {
+
+                
                 if let srcFiles = try? fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil) {
+
+                    
                     for srcFile in srcFiles {
+                        // تخطي المجلدات
+                        var isDir: ObjCBool = false
+                        if fm.fileExists(atPath: srcFile.path, isDirectory: &isDir), isDir.boolValue {
+                            continue
+                        }
+                        
                         let dest = docs.appendingPathComponent(srcFile.lastPathComponent)
                         
                         // حذف الملف القديم إذا كان موجودًا
@@ -555,20 +704,29 @@ final class TasksStore: ObservableObject {
                         do {
                             try fm.copyItem(at: srcFile, to: dest)
                             restoredAttachments += 1
+
                         } catch {
+
                             // محاولة بديلة باستخدام Data
                             if let fileData = try? Data(contentsOf: srcFile) {
                                 do {
                                     try fileData.write(to: dest, options: .atomic)
                                     restoredAttachments += 1
-                                } catch { }
+
+                                } catch {
+
+                                }
                             }
                         }
                     }
+                } else {
+
                 }
+            } else {
+
             }
             
-            print("✅ تم استعادة \(restoredAttachments) مرفق من النسخة الاحتياطية")
+
             
             // تحديث المسارات في البيانات المستعادة
             var updatedPages = decoded
@@ -586,11 +744,12 @@ final class TasksStore: ObservableObject {
             
             // تنظيف المجلد المؤقت
             try? fm.removeItem(at: destRoot)
+
             
             return
         }
         
-        throw NSError(domain: "import", code: -2, userInfo: [NSLocalizedDescriptionKey: "صيغة غير مدعومة. استخدم JSON أو ZIP."])
+        throw NSError(domain: "import", code: -2, userInfo: [NSLocalizedDescriptionKey: "صيغة غير مدعومة. استخدم JSON أو ZIP."]) as NSError
     }
     
     // MARK: - Toggle task in Daily
@@ -623,8 +782,6 @@ final class TasksStore: ObservableObject {
             }
         }
         
-        print("📋 عدد الملفات المستخدمة: \(usedFileNames.count)")
-        print("📋 الملفات المستخدمة: \(usedFileNames)")
         
         // البحث عن جميع الملفات في مجلد Documents
         guard let allFiles = try? fm.contentsOfDirectory(
@@ -664,16 +821,16 @@ final class TasksStore: ObservableObject {
                 do {
                     try fm.removeItem(at: fileURL)
                     deletedCount += 1
-                    print("🗑️ تم حذف ملف غير مستخدم: \(fileName)")
+
                 } catch {
-                    print("❌ فشل حذف \(fileName): \(error.localizedDescription)")
+
                 }
             } else {
-                print("✅ تم الحفاظ على الملف المستخدم: \(fileName)")
+
             }
         }
         
-        print("✅ تم تنظيف \(deletedCount) ملف وتحرير \(freedSpace / 1024) KB")
+
         return (deletedCount, freedSpace)
     }
     
@@ -735,6 +892,9 @@ enum TasksFilter: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var store: TasksStore
+    @EnvironmentObject private var interstitialAd: InterstitialAdManager
+    @EnvironmentObject private var subscriptionManager: SubscriptionManager
+    @EnvironmentObject private var themeManager: ThemeManager
     @State private var selectedPageID: UUID? = nil
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
@@ -868,6 +1028,13 @@ struct ContentView: View {
                         .listRowSpacing(4)
                         .padding(.top, 4)
                     }
+
+                    // إعلان بانر — يختفي للمشتركين
+                    if !subscriptionManager.isPremium {
+                        AdaptiveBannerAdView()
+                            .frame(height: 50)
+                            .padding(.bottom, 4)
+                    }
                 }
                 if currentPage?.isDaily != true {
                     Button {
@@ -878,7 +1045,7 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 56))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(themeManager.currentTheme.fabColor)
                             .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 3)
                     }
                     .padding(.trailing, 24)
@@ -963,7 +1130,7 @@ struct ContentView: View {
                         .frame(maxWidth: 360)
                         .background(
                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color(.systemBackground))
+                                .fill(themeManager.currentTheme.cardBackground)
                                 .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                         )
                         .padding(.horizontal, 24)
@@ -974,18 +1141,25 @@ struct ContentView: View {
                 if selectedPageID == nil { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
                 store.requestNotificationAuthorizationIfNeeded()
             }
+            .background(themeManager.currentTheme.backgroundColor.ignoresSafeArea())
+            .preferredColorScheme(themeManager.currentTheme.preferredColorScheme)
+            .tint(themeManager.currentTheme.accentColor)
         }
     }
     
     private var headerArea: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(navigationTitleText).font(.system(size: 28, weight: .bold)).padding(.horizontal)
+        let theme = themeManager.currentTheme
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(navigationTitleText)
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(theme.primaryTextColor)
+                .padding(.horizontal)
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(theme.secondaryTextColor)
                 TextField("ابحث في المهام", text: $searchText).textInputAutocapitalization(.never)
             }
             .padding(.horizontal).padding(.vertical, 10)
-            .background(Color.secondary.opacity(0.12)).clipShape(Capsule()).padding(.horizontal)
+            .background(theme.searchBarBackground).clipShape(Capsule()).padding(.horizontal)
         }
         .padding(.top, 6)
     }
@@ -1018,7 +1192,11 @@ struct ContentView: View {
                         Button("إضافة") { addPage() }.disabled(newPageName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                .alert("اسم الصفحة مكرر", isPresented: $showAddDuplicateAlert) { Button("حسنًا", role: .cancel) { } } message: { Text("يوجد صفحة أخرى بنفس الاسم. اختر اسمًا مختلفًا.") }
+                .alert("اسم الصفحة مكرر", isPresented: $showAddDuplicateAlert) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text("يوجد صفحة أخرى بنفس الاسم. اختر اسمًا مختلفًا.")
+                }
             }
         }
     }
@@ -1036,8 +1214,8 @@ struct ContentView: View {
                     .lineLimit(2).multilineTextAlignment(.trailing)
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
-            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .background(isSelected ? themeManager.currentTheme.selectedChipBackground : themeManager.currentTheme.unselectedChipBackground)
+            .foregroundStyle(isSelected ? themeManager.currentTheme.accentColor : themeManager.currentTheme.primaryTextColor)
             .clipShape(Capsule())
         }
         .contextMenu {
@@ -1052,23 +1230,24 @@ struct ContentView: View {
     }
     
     private var chipsFiltersBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let theme = themeManager.currentTheme
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(TasksFilter.allCases) { f in
                     Button { filter = f } label: {
                         Text(f.rawValue)
                             .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(filter == f ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.12))
-                            .foregroundStyle(filter == f ? Color.white : Color.primary)
+                            .background(filter == f ? theme.activeFilterBackground : theme.unselectedChipBackground)
+                            .foregroundStyle(filter == f ? theme.activeFilterTextColor : theme.primaryTextColor)
                             .clipShape(Capsule())
                     }
                 }
                 HStack(spacing: 8) {
-                    Text("ترتيب بالأولوية").font(.footnote).foregroundStyle(.secondary)
-                    Toggle("", isOn: $sortByPriority).labelsHidden()
+                    Text("ترتيب بالأولوية").font(.footnote).foregroundStyle(theme.secondaryTextColor)
+                    Toggle("", isOn: $sortByPriority).labelsHidden().tint(theme.accentColor)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.12)).clipShape(Capsule())
+                .background(theme.unselectedChipBackground).clipShape(Capsule())
             }
             .padding(.horizontal)
         }
@@ -1197,6 +1376,7 @@ private struct TaskRowContainer: View {
 private struct TaskCardRow: View {
     @Binding var task: TaskItem
     var pageName: String?
+    @EnvironmentObject private var themeManager: ThemeManager
     private var hasAttachments: Bool { !task.attachments.isEmpty }
     private var hasNotes: Bool { !task.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var stepsProgress: Double {
@@ -1227,6 +1407,8 @@ private struct TaskCardRow: View {
                     if task.isInDaily { Image(systemName: "sun.max.fill").foregroundStyle(.yellow).imageScale(.small) }
                     if hasAttachments { Image(systemName: "paperclip").foregroundStyle(.secondary).imageScale(.small) }
                     if hasNotes { Image(systemName: "square.and.pencil").foregroundStyle(.secondary).imageScale(.small) }
+                    if task.dueDate != nil { Image(systemName: "bell.badge.fill").foregroundStyle(themeManager.currentTheme.accentColor).imageScale(.small) }
+                    if task.recurrence != .none { Image(systemName: "repeat.circle.fill").foregroundStyle(themeManager.currentTheme.highlightColor).imageScale(.small) }
                 }
                 Spacer(minLength: 6)
                 Text(task.priority.title)
@@ -1254,8 +1436,8 @@ private struct TaskCardRow: View {
         .padding(8)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.systemBackground))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.secondary.opacity(0.15), lineWidth: 0.75))
+                .fill(themeManager.currentTheme.cardBackground)
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(themeManager.currentTheme.accentColor.opacity(0.15), lineWidth: 0.75))
                 .shadow(color: .black.opacity(0.04), radius: 4, x: 0, y: 1)
         )
         .contentShape(Rectangle())
@@ -1271,6 +1453,7 @@ struct TaskDetailView: View {
     @Binding var task: TaskItem
     var onToggleDaily: (Bool) -> Void
     @EnvironmentObject private var storeEnv: TasksStore
+    @EnvironmentObject private var themeManager: ThemeManager
     @State private var newStepTitle: String = ""
     @State private var isPhotoPickerPresented: Bool = false
     @State private var isFileImporterPresented: Bool = false
@@ -1283,21 +1466,36 @@ struct TaskDetailView: View {
     @State private var attachmentPendingDelete: TaskAttachment? = nil
     @State private var showDeleteAttachmentConfirm: Bool = false
     
+    // حالات إضافية لليوم الأسبوعي والشهري
+    @State private var selectedWeekday: Int = 1 // الأحد = 1
+    @State private var selectedMonthDay: Int = 1 // من 1 إلى 31
+    @State private var reminderTime: Date = {
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        comps.hour = 9; comps.minute = 0
+        return Calendar.current.date(from: comps) ?? Date()
+    }()
+    
+    @State private var showDateCalendar: Bool = false
+    @State private var selectedReminderDate: Date = Date()
+
     private var isReminderOnBinding: Binding<Bool> {
         Binding(
             get: { task.dueDate != nil },
             set: { on in
                 if on {
                     if task.dueDate == nil {
-                        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-                        comps.hour = 9; comps.minute = 0
-                        task.dueDate = Calendar.current.date(from: comps)
+                        let defaultDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
+                        task.dueDate = defaultDate
+                        selectedReminderDate = defaultDate
+                        showDateCalendar = true
                     }
-                    if task.recurrence == .none { task.recurrence = .daily }
                     storeEnv.scheduleTaskNotification(for: task)
                 } else {
-                    task.dueDate = nil; task.recurrence = .none
-                    storeEnv.cancelTaskNotification(taskID: task.id)
+                    task.dueDate = nil
+                    task.reminderBefore = .none
+                    showDateCalendar = false
+                    // نعيد جدولة الإشعارات — التكرار يبقى مستقل
+                    storeEnv.scheduleTaskNotification(for: task)
                 }
             }
         )
@@ -1372,26 +1570,33 @@ struct TaskDetailView: View {
                  ? "سيتم حذف المرفق من المهمة وحذف ملفه نهائيًا من التخزين."
                  : "سيتم حذف المرفق من المهمة فقط، وسيبقى الملف محفوظًا في التخزين.")
         }
-        .onAppear { storeEnv.requestNotificationAuthorizationIfNeeded() }
+        .onAppear {
+            storeEnv.requestNotificationAuthorizationIfNeeded()
+            loadComponentsFromDueDate()
+            if let dueDate = task.dueDate {
+                selectedReminderDate = dueDate
+            }
+        }
+        .background(themeManager.currentTheme.backgroundColor.ignoresSafeArea())
+        .preferredColorScheme(themeManager.currentTheme.preferredColorScheme)
+        .tint(themeManager.currentTheme.accentColor)
     }
     
     // MARK: - Task Info Section
     private var taskInfoSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let theme = themeManager.currentTheme
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("معلومات المهمة", systemImage: "info.circle").font(.headline)
+                Label("معلومات المهمة", systemImage: "info.circle")
+                    .font(.headline)
+                    .foregroundStyle(theme.primaryTextColor)
                 Spacer()
             }
-            
+
             titleField
+            reminderDateSection
             priorityPicker
-            reminderToggle
-            
-            if task.dueDate != nil {
-                dueDatePicker
-                recurrencePicker
-            }
-            
+            recurrenceSection
             dailyToggle
             completionToggle
         }
@@ -1399,9 +1604,314 @@ struct TaskDetailView: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.secondary.opacity(0.06))
+                .fill(theme.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(theme.accentColor.opacity(0.15), lineWidth: 0.5)
+                )
         )
         .padding(.horizontal)
+    }
+
+    // MARK: - قسم التذكير بالتاريخ والوقت (احترافي)
+    private var reminderDateSection: some View {
+        let theme = themeManager.currentTheme
+        return VStack(alignment: .leading, spacing: 10) {
+            // زرار تفعيل التذكير
+            HStack {
+                Image(systemName: task.dueDate != nil ? "bell.badge.fill" : "bell.slash")
+                    .foregroundStyle(task.dueDate != nil ? theme.accentColor : theme.secondaryTextColor)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("التذكير")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    if let dueDate = task.dueDate {
+                        Text(formattedFullDate(dueDate))
+                            .font(.caption)
+                            .foregroundStyle(theme.accentColor)
+                    } else {
+                        Text("بدون تذكير")
+                            .font(.caption)
+                            .foregroundStyle(theme.secondaryTextColor)
+                    }
+                }
+
+                Spacer()
+
+                Toggle("", isOn: isReminderOnBinding)
+                    .labelsHidden()
+                    .tint(theme.accentColor)
+            }
+            .padding(.vertical, 4)
+
+            // عرض التقويم عند التفعيل
+            if task.dueDate != nil {
+                VStack(spacing: 12) {
+                    // زرار فتح/إغلاق التقويم
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            showDateCalendar.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: "calendar")
+                                .foregroundStyle(theme.accentColor)
+                            Text(formattedShortDate(task.dueDate ?? Date()))
+                                .foregroundStyle(theme.primaryTextColor)
+                            Spacer()
+                            Image(systemName: "clock")
+                                .foregroundStyle(theme.accentColor)
+                            Text(formattedTime(task.dueDate ?? Date()))
+                                .foregroundStyle(theme.primaryTextColor)
+                            Image(systemName: showDateCalendar ? "chevron.up" : "chevron.down")
+                                .foregroundStyle(theme.secondaryTextColor)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(theme.reminderBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(theme.reminderBorderColor.opacity(0.3), lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    // التقويم المنسدل
+                    if showDateCalendar {
+                        VStack(spacing: 10) {
+                            DatePicker("اختر التاريخ والوقت",
+                                       selection: Binding(
+                                           get: { selectedReminderDate },
+                                           set: { newDate in
+                                               selectedReminderDate = newDate
+                                               task.dueDate = newDate
+                                               storeEnv.scheduleTaskNotification(for: task)
+                                           }
+                                       ),
+                                       in: Date()...,
+                                       displayedComponents: [.date, .hourAndMinute])
+                            .datePickerStyle(.graphical)
+                            .environment(\.locale, Locale(identifier: "ar"))
+                            .environment(\.calendar, Calendar(identifier: .gregorian))
+                            .tint(theme.accentColor)
+                        }
+                        .padding(8)
+                        .background(theme.reminderBackground.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // خيار "تذكيري قبل الموعد"
+                    reminderBeforeSection
+                }
+            }
+        }
+    }
+
+    // MARK: - خيار التذكير قبل الموعد
+    private var reminderBeforeSection: some View {
+        let theme = themeManager.currentTheme
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: task.reminderBefore.symbol)
+                    .foregroundStyle(task.reminderBefore != .none ? theme.eventDotColor : theme.secondaryTextColor)
+                    .font(.subheadline)
+                Text("تذكيري قبل الموعد")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ReminderBefore.allCases) { option in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                task.reminderBefore = option
+                                storeEnv.scheduleTaskNotification(for: task)
+                            }
+                        } label: {
+                            Text(option.title)
+                                .font(.caption)
+                                .fontWeight(task.reminderBefore == option ? .bold : .regular)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    task.reminderBefore == option
+                                    ? theme.badgeBackground
+                                    : theme.unselectedChipBackground
+                                )
+                                .foregroundStyle(
+                                    task.reminderBefore == option ? theme.badgeTextColor : theme.primaryTextColor
+                                )
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(
+                                            task.reminderBefore == option ? theme.eventDotColor : Color.clear,
+                                            lineWidth: 1.5
+                                        )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - قسم التكرار (مستقل تماماً عن التذكير)
+    private var recurrenceSection: some View {
+        let theme = themeManager.currentTheme
+        return VStack(alignment: .leading, spacing: 10) {
+            // زرار تفعيل التكرار
+            HStack {
+                Image(systemName: task.recurrence != .none ? "repeat.circle.fill" : "repeat.circle")
+                    .foregroundStyle(task.recurrence != .none ? theme.highlightColor : theme.secondaryTextColor)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("التكرار")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    if task.recurrence != .none {
+                        Text(task.recurrence.title)
+                            .font(.caption)
+                            .foregroundStyle(theme.highlightColor)
+                    } else {
+                        Text("بدون تكرار")
+                            .font(.caption)
+                            .foregroundStyle(theme.secondaryTextColor)
+                    }
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { task.recurrence != .none },
+                    set: { isOn in
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            if isOn {
+                                task.recurrence = .daily
+                                updateRecurrenceTime()
+                            } else {
+                                task.recurrence = .none
+                                task.recurrenceTime = nil
+                                storeEnv.scheduleTaskNotification(for: task)
+                            }
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .tint(theme.highlightColor)
+            }
+            .padding(.vertical, 4)
+
+            // خيارات التكرار عند التفعيل
+            if task.recurrence != .none {
+                VStack(spacing: 10) {
+                    // أزرار اختيار نوع التكرار
+                    HStack(spacing: 8) {
+                        recurrenceOptionButton(.daily, icon: "sun.max.fill", label: "يومي")
+                        recurrenceOptionButton(.weekly, icon: "calendar.badge.clock", label: "أسبوعي")
+                        recurrenceOptionButton(.monthly, icon: "calendar.circle.fill", label: "شهري")
+                    }
+
+                    // إعدادات إضافية حسب نوع التكرار
+                    switch task.recurrence {
+                    case .none:
+                        EmptyView()
+                    case .daily:
+                        DatePicker("وقت التكرار", selection: Binding(
+                            get: { reminderTime },
+                            set: { newTime in
+                                reminderTime = newTime
+                                updateRecurrenceTime()
+                            }
+                        ), displayedComponents: .hourAndMinute)
+                    case .weekly:
+                        Picker("اليوم", selection: $selectedWeekday) {
+                            ForEach(weekdayOptions, id: \.value) { option in
+                                Text(option.name).tag(option.value)
+                            }
+                        }
+                        .onChange(of: selectedWeekday) { _, _ in
+                            updateRecurrenceTime()
+                        }
+                        DatePicker("الوقت", selection: Binding(
+                            get: { reminderTime },
+                            set: { newTime in
+                                reminderTime = newTime
+                                updateRecurrenceTime()
+                            }
+                        ), displayedComponents: .hourAndMinute)
+                    case .monthly:
+                        Picker("اليوم من الشهر", selection: $selectedMonthDay) {
+                            ForEach(1...31, id: \.self) { day in
+                                Text("\(day)").tag(day)
+                            }
+                        }
+                        .onChange(of: selectedMonthDay) { _, _ in
+                            updateRecurrenceTime()
+                        }
+                        DatePicker("الوقت", selection: Binding(
+                            get: { reminderTime },
+                            set: { newTime in
+                                reminderTime = newTime
+                                updateRecurrenceTime()
+                            }
+                        ), displayedComponents: .hourAndMinute)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    // زرار خيار التكرار (يومي/أسبوعي/شهري)
+    private func recurrenceOptionButton(_ type: TaskRecurrence, icon: String, label: String) -> some View {
+        let theme = themeManager.currentTheme
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                task.recurrence = type
+                updateRecurrenceTime()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption)
+                Text(label)
+                    .font(.caption)
+                    .fontWeight(task.recurrence == type ? .bold : .regular)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                task.recurrence == type
+                ? theme.highlightColor.opacity(0.2)
+                : theme.unselectedChipBackground
+            )
+            .foregroundStyle(
+                task.recurrence == type ? theme.highlightColor : theme.primaryTextColor
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(
+                        task.recurrence == type ? theme.highlightColor : Color.clear,
+                        lineWidth: 1.5
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     private var titleField: some View {
@@ -1440,27 +1950,96 @@ struct TaskDetailView: View {
         }
     }
     
-    private var reminderToggle: some View {
-        Toggle("تفعيل التذكير", isOn: isReminderOnBinding)
+    // MARK: - دوال التنسيق للتاريخ والوقت
+    private func formattedFullDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar")
+        formatter.dateFormat = "EEEE d MMMM yyyy - h:mm a"
+        return formatter.string(from: date)
+    }
+
+    private func formattedShortDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar")
+        formatter.dateFormat = "d MMM yyyy"
+        return formatter.string(from: date)
+    }
+
+    private func formattedTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: date)
     }
     
-    private var dueDatePicker: some View {
-        DatePicker("التاريخ والوقت", selection: Binding(
-            get: { task.dueDate ?? Date() },
-            set: { task.dueDate = $0; storeEnv.scheduleTaskNotification(for: task) }
-        ), displayedComponents: [.date, .hourAndMinute])
+    // recurrencePicker تم دمجه في recurrenceSection الجديد
+    
+    // أسماء أيام الأسبوع بالعربي
+    private var weekdayOptions: [(name: String, value: Int)] {
+        [
+            ("الأحد", 1),
+            ("الإثنين", 2),
+            ("الثلاثاء", 3),
+            ("الأربعاء", 4),
+            ("الخميس", 5),
+            ("الجمعة", 6),
+            ("السبت", 7)
+        ]
     }
     
-    private var recurrencePicker: some View {
-        Picker("التكرار", selection: Binding(
-            get: { task.recurrence },
-            set: { task.recurrence = $0; storeEnv.scheduleTaskNotification(for: task) }
-        )) {
-            ForEach(TaskRecurrence.allCases) { r in
-                HStack {
-                    Image(systemName: r.symbol)
-                    Text(r.title)
-                }.tag(r)
+    // دالة لتحديث recurrenceTime بناءً على المكونات المختارة (مستقل عن التذكير)
+    private func updateRecurrenceTime() {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.hour, .minute], from: reminderTime)
+
+        switch task.recurrence {
+        case .none:
+            task.recurrenceTime = nil
+
+        case .daily:
+            var dateComps = calendar.dateComponents([.year, .month, .day], from: Date())
+            dateComps.hour = components.hour
+            dateComps.minute = components.minute
+            task.recurrenceTime = calendar.date(from: dateComps)
+
+        case .weekly:
+            var dateComps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+            dateComps.weekday = selectedWeekday
+            dateComps.hour = components.hour
+            dateComps.minute = components.minute
+            task.recurrenceTime = calendar.date(from: dateComps)
+
+        case .monthly:
+            var dateComps = calendar.dateComponents([.year, .month], from: Date())
+            dateComps.day = selectedMonthDay
+            dateComps.hour = components.hour
+            dateComps.minute = components.minute
+            task.recurrenceTime = calendar.date(from: dateComps)
+        }
+
+        storeEnv.scheduleTaskNotification(for: task)
+    }
+    
+    // دالة لتحميل المكونات من recurrenceTime (مستقل عن التذكير)
+    private func loadComponentsFromDueDate() {
+        // تحميل بيانات التكرار من recurrenceTime
+        if let recTime = task.recurrenceTime {
+            let calendar = Calendar.current
+            let components = calendar.dateComponents([.weekday, .day, .hour, .minute], from: recTime)
+
+            if let hour = components.hour, let minute = components.minute {
+                var timeComps = calendar.dateComponents([.year, .month, .day], from: Date())
+                timeComps.hour = hour
+                timeComps.minute = minute
+                reminderTime = calendar.date(from: timeComps) ?? reminderTime
+            }
+
+            if let weekday = components.weekday {
+                selectedWeekday = weekday
+            }
+
+            if let day = components.day {
+                selectedMonthDay = min(max(day, 1), 31)
             }
         }
     }
@@ -1701,6 +2280,9 @@ struct TaskDetailView: View {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: TasksStore
+    @EnvironmentObject var themeManager: ThemeManager
+    @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @State private var showPaywall: Bool = false
 
     private struct ShareItem: Identifiable { let id = UUID(); let url: URL }
     @State private var shareItem: ShareItem? = nil
@@ -1723,16 +2305,25 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // قسم الاشتراك PRO
+                premiumSection
+                // الثيمات
+                ThemePickerView(themeManager: themeManager, showPaywall: $showPaywall)
                 notificationsSection
                 backupSection
                 attachmentDeletionSection
                 cleanupSection
                 aboutSection
             }
+            .sheet(isPresented: $showPaywall) {
+                PaywallView()
+            }
             .navigationTitle("الإعدادات")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إغلاق") { dismiss() } } }
             .onAppear {
                 updateUnusedAttachmentsCount()
+                // تحقق إن الثيم المختار متاح للمستخدم
+                themeManager.validateTheme(isPremium: subscriptionManager.isPremium)
             }
             .sheet(item: $shareItem) { item in
                 ShareLink(item: item.url) { Label("مشاركة الملف", systemImage: "square.and.arrow.up") }
@@ -1793,26 +2384,89 @@ struct SettingsView: View {
     
     private var exportButtons: some View {
         Group {
-            Button("نسخة احتياطية كاملة (ZIP)") {
-                if let url = store.exportFullBackupZIP() { 
-                    shareItem = ShareItem(url: url)
-                } else { 
-                    exportErrorMessage = "تعذر إنشاء ملف ZIP. تأكد من إضافة ZIPFoundation."
-                    exportError = true
+            // عرض عدد المرفقات في النظام
+            HStack {
+                Text("عدد المرفقات في النظام:")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(totalAttachmentsCount)")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+
+            if subscriptionManager.isPremium {
+                Button("نسخة احتياطية كاملة (ZIP)") {
+
+                    if let url = store.exportFullBackupZIP() {
+                        shareItem = ShareItem(url: url)
+                    } else {
+                        exportErrorMessage = "تعذر إنشاء ملف ZIP. تأكد من إضافة ZIPFoundation."
+                        exportError = true
+                    }
+                }
+                .disabled(store.pages.isEmpty)
+
+                Button("تصدير البيانات فقط (JSON)") {
+                    if let url = store.exportData() {
+                        shareItem = ShareItem(url: url)
+                    } else {
+                        exportErrorMessage = "تعذر إنشاء ملف JSON للتصدير."
+                        exportError = true
+                    }
+                }
+                .disabled(store.pages.isEmpty)
+            } else {
+                // المستخدم المجاني — يظهر زرار مقفل يفتح PaywallView
+                Button {
+                    showPaywall = true
+                } label: {
+                    HStack {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(.orange)
+                        Text("نسخة احتياطية كاملة (ZIP)")
+                        Spacer()
+                        Text("PRO")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.2))
+                            .foregroundStyle(.orange)
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Button {
+                    showPaywall = true
+                } label: {
+                    HStack {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(.orange)
+                        Text("تصدير البيانات فقط (JSON)")
+                        Spacer()
+                        Text("PRO")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.2))
+                            .foregroundStyle(.orange)
+                            .clipShape(Capsule())
+                    }
                 }
             }
-            .disabled(store.pages.isEmpty)
-            
-            Button("تصدير البيانات فقط (JSON)") {
-                if let url = store.exportData() { 
-                    shareItem = ShareItem(url: url)
-                } else { 
-                    exportErrorMessage = "تعذر إنشاء ملف JSON للتصدير."
-                    exportError = true
-                }
-            }
-            .disabled(store.pages.isEmpty)
         }
+    }
+    
+    private var totalAttachmentsCount: Int {
+        var count = 0
+        for page in store.pages {
+            for task in page.tasks {
+                count += task.attachments.count
+            }
+        }
+        return count
     }
     
     private var importButtons: some View {
@@ -1918,14 +2572,76 @@ struct SettingsView: View {
         .disabled(unusedAttachmentsCount == 0)
     }
     
+    // MARK: - Premium Section
+    private var premiumSection: some View {
+        Section {
+            if subscriptionManager.isPremium {
+                HStack {
+                    Image(systemName: "crown.fill")
+                        .foregroundStyle(.orange)
+                    Text("أنت مشترك في أنجز PRO")
+                        .fontWeight(.medium)
+                    Spacer()
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                }
+            } else {
+                Button {
+                    showPaywall = true
+                } label: {
+                    HStack {
+                        Image(systemName: "crown.fill")
+                            .font(.title2)
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.orange, .yellow],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("ترقية إلى أنجز PRO")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text("ثيمات حصرية • بدون إعلانات • مميزات متقدمة")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.left")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
     // MARK: - About Section
     private var aboutSection: some View {
         Section("حول التطبيق") {
-            Link("سياسة الخصوصية", destination: URL(string: "https://example.com/privacy")!)
+            HStack {
+                Text("الإصدار")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(appVersion)
+                    .foregroundStyle(.secondary)
+            }
+
+            Link("سياسة الخصوصية", destination: URL(string: "https://vip1981111.github.io/anjaz-support/privacy.html")!)
             Text("البيانات تحفظ محليًا على جهازك. لا توجد خوادم.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "\(version) (\(build))"
     }
     
     // MARK: - Preview Sheet
