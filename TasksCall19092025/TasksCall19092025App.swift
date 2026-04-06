@@ -27,6 +27,7 @@ private let _notificationHandler = NotificationHandler()
 struct TasksCall19092025App: App {
     @StateObject private var store = TasksStore()
     @StateObject private var interstitialAd = InterstitialAdManager()
+    @StateObject private var rewardedAd = RewardedAdManager()
     @StateObject private var subscriptionManager = SubscriptionManager()
     @StateObject private var themeManager = ThemeManager()
     @Environment(\.scenePhase) private var scenePhase
@@ -43,6 +44,7 @@ struct TasksCall19092025App: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(interstitialAd)
+                .environmentObject(rewardedAd)
                 .environmentObject(subscriptionManager)
                 .environmentObject(themeManager)
                 .environment(\.layoutDirection, .rightToLeft)
@@ -78,6 +80,7 @@ struct TasksCall19092025App: App {
         GADMobileAds.sharedInstance().start { _ in
             Task { @MainActor in
                 self.interstitialAd.loadAd()
+                self.rewardedAd.loadAd()
             }
         }
     }

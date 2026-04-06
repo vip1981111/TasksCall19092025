@@ -17,9 +17,11 @@ struct AdConfig {
     #if DEBUG
     static let bannerAdUnitID = "ca-app-pub-3940256099942544/2435281174" // Test Banner
     static let interstitialAdUnitID = "ca-app-pub-3940256099942544/4411468910" // Test Interstitial
+    static let rewardedAdUnitID = "ca-app-pub-3940256099942544/1712485313" // Test Rewarded
     #else
     static let bannerAdUnitID = "ca-app-pub-2246849300811913/2034108997"
     static let interstitialAdUnitID = "ca-app-pub-2246849300811913/3798509006"
+    static let rewardedAdUnitID = "ca-app-pub-2246849300811913/REWARDED_ID_HERE" // ← غيّره بمعرفك
     #endif
 }
 
@@ -135,12 +137,72 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
     }
 }
 
+// MARK: - Rewarded Ad Manager (إعلان المكافأة)
+@MainActor
+final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentDelegate {
+    @Published var isAdReady: Bool = false
+    @Published var rewardEarned: Bool = false
+    private var rewardedAd: GADRewardedAd?
+    private var onRewardEarned: (() -> Void)?
+
+    override init() {
+        super.init()
+    }
+
+    func loadAd() {
+        GADRewardedAd.load(withAdUnitID: AdConfig.rewardedAdUnitID, request: GADRequest()) { [weak self] ad, error in
+            guard let self = self else { return }
+            if error != nil {
+                self.isAdReady = false
+                return
+            }
+            self.rewardedAd = ad
+            self.rewardedAd?.fullScreenContentDelegate = self
+            self.isAdReady = true
+        }
+    }
+
+    /// عرض إعلان المكافأة — يُنفّذ الـ completion عند مشاهدة الإعلان كاملاً
+    func showAd(onReward: @escaping () -> Void) {
+        guard let ad = rewardedAd else {
+            loadAd()
+            return
+        }
+        self.onRewardEarned = onReward
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            ad.present(fromRootViewController: rootVC) { [weak self] in
+                // المستخدم شاهد الإعلان كاملاً — يستحق المكافأة
+                self?.rewardEarned = true
+                self?.onRewardEarned?()
+                self?.onRewardEarned = nil
+            }
+        }
+    }
+
+    // MARK: - GADFullScreenContentDelegate
+    nonisolated func adDidDismissFullScreenContent(_ ad: GADFullScreenPresentingAd) {
+        Task { @MainActor in
+            self.isAdReady = false
+            self.loadAd() // تحميل إعلان جديد
+        }
+    }
+
+    nonisolated func ad(_ ad: GADFullScreenPresentingAd, didFailToPresentFullScreenContentWithError error: Error) {
+        Task { @MainActor in
+            self.isAdReady = false
+            self.loadAd()
+        }
+    }
+}
+
 #else
 // MARK: - Mac Catalyst Stubs (الإعلانات غير مدعومة على الماك)
 
 struct AdConfig {
     static let bannerAdUnitID = ""
     static let interstitialAdUnitID = ""
+    static let rewardedAdUnitID = ""
 }
 
 struct BannerAdView: View {
@@ -160,6 +222,14 @@ final class InterstitialAdManager: ObservableObject {
     func loadAd() {}
     func trackAction() {}
     func showAd() {}
+}
+
+@MainActor
+final class RewardedAdManager: ObservableObject {
+    @Published var isAdReady: Bool = false
+    @Published var rewardEarned: Bool = false
+    func loadAd() {}
+    func showAd(onReward: @escaping () -> Void) {}
 }
 
 #endif
