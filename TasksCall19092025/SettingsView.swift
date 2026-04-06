@@ -14,6 +14,8 @@ struct SettingsView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
     @State private var showPaywall: Bool = false
+    @State private var showSyncAlert: Bool = false
+    @State private var syncAlertMessage: String = ""
 
     private struct ShareItem: Identifiable { let id = UUID(); let url: URL }
     @State private var shareItem: ShareItem? = nil
@@ -37,6 +39,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 premiumSection
+                cloudSyncSection
                 ThemePickerView(themeManager: themeManager, showPaywall: $showPaywall)
                 notificationsSection
                 backupSection
@@ -226,6 +229,100 @@ struct SettingsView: View {
             }
         } footer: {
             Text("يساعد هذا الخيار على توفير المساحة ومنع تراكم ملفات غير مستخدمة داخل التطبيق.")
+        }
+    }
+
+    // MARK: - Cloud Sync Section
+
+    private var cloudSyncSection: some View {
+        Section {
+            if store.cloudKit.iCloudAvailable {
+                // حالة iCloud
+                HStack {
+                    Image(systemName: "icloud.fill")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("iCloud متصل")
+                            .fontWeight(.medium)
+                        Text("المزامنة عبر حساب Apple ID")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if store.cloudKit.isSyncing {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
+                }
+
+                Toggle("المزامنة التلقائية", isOn: Binding(
+                    get: { store.cloudKit.syncEnabled },
+                    set: { newVal in
+                        store.cloudKit.syncEnabled = newVal
+                        if newVal { Task { await store.syncNow() } }
+                    }
+                ))
+
+                if let lastSync = store.cloudKit.lastSyncDate {
+                    HStack {
+                        Text("آخر مزامنة")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(lastSync, style: .relative)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    Task {
+                        await store.syncNow()
+                        syncAlertMessage = "تمت المزامنة بنجاح ✓"
+                        showSyncAlert = true
+                    }
+                } label: {
+                    Label("مزامنة الآن", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Button {
+                    Task {
+                        let success = await store.pullFromCloud()
+                        syncAlertMessage = success ? "تم تحميل البيانات من iCloud" : "لا توجد بيانات في iCloud بعد"
+                        showSyncAlert = true
+                    }
+                } label: {
+                    Label("تحميل من iCloud", systemImage: "icloud.and.arrow.down")
+                }
+            } else {
+                // غير متصل
+                HStack {
+                    Image(systemName: "icloud.slash")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("المزامنة السحابية")
+                            .fontWeight(.medium)
+                        Text("زامن مهامك بين أجهزتك عبر iCloud")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                if let error = store.cloudKit.syncError {
+                    Text(error)
+                        .font(.caption).foregroundStyle(.red)
+                }
+
+                Button("إعادة فحص iCloud") {
+                    Task { await store.cloudKit.checkiCloudStatus() }
+                }
+            }
+        } header: {
+            Label("المزامنة السحابية", systemImage: "icloud")
+        } footer: {
+            Text("البيانات تُزامن عبر حساب iCloud الخاص بك. لا حاجة لتسجيل دخول إضافي.")
+        }
+        .alert("المزامنة", isPresented: $showSyncAlert) {
+            Button("حسنًا", role: .cancel) { }
+        } message: {
+            Text(syncAlertMessage)
         }
     }
 

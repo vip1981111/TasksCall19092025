@@ -12,7 +12,7 @@ import ZIPFoundation
 
 @MainActor
 final class TasksStore: ObservableObject {
-    @Published var pages: [TaskPage] = [] { didSet { save() } }
+    @Published var pages: [TaskPage] = [] { didSet { save(); syncToCloudDebounced() } }
     @Published var notificationsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
@@ -31,6 +31,9 @@ final class TasksStore: ObservableObject {
     }
 
     private let fileURL: URL
+    private var syncTask: Task<Void, Never>?
+    let cloudKit = CloudKitManager()
+
     init(filename: String = "tasks_pages.json") {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         self.fileURL = docs.appendingPathComponent(filename)
@@ -569,4 +572,28 @@ final class TasksStore: ObservableObject {
         return unusedCount
     }
 
+    // MARK: - مزامنة iCloud
+
+    /// مزامنة مؤجلة — تنتظر 2 ثانية بعد آخر تغيير قبل الرفع
+    private func syncToCloudDebounced() {
+        guard cloudKit.syncEnabled else { return }
+        syncTask?.cancel()
+        syncTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await cloudKit.upload(pages: pages)
+        }
+    }
+
+    /// مزامنة فورية — رفع البيانات الآن
+    func syncNow() async {
+        await cloudKit.upload(pages: pages)
+    }
+
+    /// تحميل البيانات من iCloud واستبدال المحلية
+    func pullFromCloud() async -> Bool {
+        guard let cloudPages = await cloudKit.download() else { return false }
+        self.pages = cloudPages
+        return true
+    }
 }
