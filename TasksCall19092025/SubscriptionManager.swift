@@ -53,7 +53,70 @@ final class SubscriptionManager: ObservableObject {
     @Published var errorMessage: String? = nil
 
     var isPremium: Bool {
-        !purchasedProductIDs.isEmpty
+        !purchasedProductIDs.isEmpty || isTrialPremiumActive
+    }
+
+    /// هل المستخدم في فترة تجربة PRO مؤقتة (من إعلان المكافأة)
+    var isTrialPremiumActive: Bool {
+        guard let until = trialPremiumUntil else { return false }
+        return Date() < until
+    }
+
+    /// هل الإعلانات مخفية مؤقتاً (من إعلان المكافأة)
+    var isAdFreeFromReward: Bool {
+        guard let until = adFreeUntil else { return false }
+        return Date() < until
+    }
+
+    /// الوقت المتبقي لإخفاء الإعلانات (نص مقروء)
+    var adFreeRemainingText: String? {
+        guard let until = adFreeUntil, Date() < until else { return nil }
+        let remaining = until.timeIntervalSince(Date())
+        let hours = Int(remaining) / 3600
+        let minutes = (Int(remaining) % 3600) / 60
+        if hours > 0 { return "متبقي \(hours) ساعة و\(minutes) دقيقة" }
+        return "متبقي \(minutes) دقيقة"
+    }
+
+    /// الوقت المتبقي لتجربة PRO (نص مقروء)
+    var trialRemainingText: String? {
+        guard let until = trialPremiumUntil, Date() < until else { return nil }
+        let remaining = until.timeIntervalSince(Date())
+        let hours = Int(remaining) / 3600
+        let minutes = (Int(remaining) % 3600) / 60
+        if hours > 0 { return "متبقي \(hours) ساعة و\(minutes) دقيقة" }
+        return "متبقي \(minutes) دقيقة"
+    }
+
+    // MARK: - تخزين أوقات المكافآت
+    @Published var adFreeUntil: Date? {
+        didSet {
+            if let date = adFreeUntil {
+                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "adFreeUntil")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "adFreeUntil")
+            }
+        }
+    }
+
+    @Published var trialPremiumUntil: Date? {
+        didSet {
+            if let date = trialPremiumUntil {
+                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "trialPremiumUntil")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "trialPremiumUntil")
+            }
+        }
+    }
+
+    /// تفعيل إخفاء الإعلانات لمدة ساعتين
+    func activateAdFreeReward() {
+        adFreeUntil = Date().addingTimeInterval(2 * 60 * 60) // ساعتين
+    }
+
+    /// تفعيل تجربة PRO لمدة 24 ساعة
+    func activateTrialPremium() {
+        trialPremiumUntil = Date().addingTimeInterval(24 * 60 * 60) // 24 ساعة
     }
 
     var monthlyProduct: Product? {
@@ -69,6 +132,14 @@ final class SubscriptionManager: ObservableObject {
     private var transactionListener: Task<Void, Never>?
 
     init() {
+        // تحميل أوقات المكافآت المحفوظة
+        if let ts = UserDefaults.standard.object(forKey: "adFreeUntil") as? Double {
+            self.adFreeUntil = Date(timeIntervalSince1970: ts)
+        }
+        if let ts = UserDefaults.standard.object(forKey: "trialPremiumUntil") as? Double {
+            self.trialPremiumUntil = Date(timeIntervalSince1970: ts)
+        }
+
         transactionListener = listenForTransactions()
         Task {
             await loadProducts()

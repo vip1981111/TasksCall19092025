@@ -12,6 +12,7 @@ struct ContentView: View {
     @EnvironmentObject private var interstitialAd: InterstitialAdManager
     @EnvironmentObject private var subscriptionManager: SubscriptionManager
     @EnvironmentObject private var themeManager: ThemeManager
+    @EnvironmentObject private var rewardedAd: RewardedAdManager
     @State private var selectedPageID: UUID? = nil
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
@@ -152,10 +153,41 @@ struct ContentView: View {
                     }
 
                     #if !targetEnvironment(macCatalyst)
-                    if !subscriptionManager.isPremium {
-                        AdaptiveBannerAdView()
-                            .frame(height: 50)
-                            .padding(.bottom, 4)
+                    if !subscriptionManager.isPremium && !subscriptionManager.isAdFreeFromReward {
+                        VStack(spacing: 0) {
+                            // زر إخفاء الإعلانات بمشاهدة إعلان مكافأة
+                            Button {
+                                rewardedAd.showAd {
+                                    subscriptionManager.activateAdFreeReward()
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "play.rectangle.fill")
+                                        .font(.caption2)
+                                    Text("شاهد إعلان لإخفاء الإعلانات ساعتين")
+                                        .font(.caption2)
+                                }
+                                .foregroundStyle(.blue)
+                                .padding(.vertical, 4)
+                            }
+
+                            AdaptiveBannerAdView()
+                                .frame(height: 50)
+                                .padding(.bottom, 4)
+                        }
+                    } else if subscriptionManager.isAdFreeFromReward && !subscriptionManager.isPremium {
+                        // إظهار الوقت المتبقي لإخفاء الإعلانات
+                        if let remaining = subscriptionManager.adFreeRemainingText {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.caption)
+                                Text("بدون إعلانات — \(remaining)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 6)
+                        }
                     }
                     #endif
                 }

@@ -13,6 +13,7 @@ struct SettingsView: View {
     @ObservedObject var store: TasksStore
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
+    @EnvironmentObject var rewardedAd: RewardedAdManager
     @State private var showPaywall: Bool = false
     @State private var showSyncAlert: Bool = false
     @State private var syncAlertMessage: String = ""
@@ -385,7 +386,17 @@ struct SettingsView: View {
             if subscriptionManager.isPremium {
                 HStack {
                     Image(systemName: "crown.fill").foregroundStyle(.orange)
-                    Text("أنت مشترك في أنجز PRO").fontWeight(.medium)
+                    if subscriptionManager.isTrialPremiumActive {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("تجربة أنجز PRO مفعّلة").fontWeight(.medium)
+                            if let remaining = subscriptionManager.trialRemainingText {
+                                Text(remaining)
+                                    .font(.caption).foregroundStyle(.orange)
+                            }
+                        }
+                    } else {
+                        Text("أنت مشترك في أنجز PRO").fontWeight(.medium)
+                    }
                     Spacer()
                     Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
                 }
@@ -407,6 +418,32 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                // زر تجربة PRO بمشاهدة إعلان
+                #if !targetEnvironment(macCatalyst)
+                Button {
+                    rewardedAd.showAd {
+                        subscriptionManager.activateTrialPremium()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "play.rectangle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.purple)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("جرّب PRO مجاناً لمدة 24 ساعة")
+                                .font(.subheadline).fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                            Text("شاهد إعلان قصير واستمتع بكل المميزات")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "gift.fill")
+                            .foregroundStyle(.purple)
+                    }
+                    .padding(.vertical, 4)
+                }
+                #endif
             }
         }
     }
