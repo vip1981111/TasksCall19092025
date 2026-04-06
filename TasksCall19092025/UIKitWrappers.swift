@@ -19,7 +19,12 @@ struct DocumentsBrowserView: UIViewControllerRepresentable {
     var onPick: (URL) -> Void
 
     func makeUIViewController(context: Context) -> UINavigationController {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
+            picker.allowsMultipleSelection = false
+            picker.delegate = context.coordinator
+            return UINavigationController(rootViewController: picker)
+        }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
         picker.directoryURL = docs
         picker.shouldShowFileExtensions = true

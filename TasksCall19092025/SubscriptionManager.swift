@@ -131,7 +131,11 @@ final class SubscriptionManager: ObservableObject {
         do {
             // مزامنة مع سيرفر Apple للتأكد من آخر حالة
             try await AppStore.sync()
-        } catch { }
+        } catch {
+            #if DEBUG
+            NSLog("⚠️ AppStore.sync failed: \(error.localizedDescription)")
+            #endif
+        }
         await updatePurchasedProducts()
         isLoading = false
         if purchasedProductIDs.isEmpty {

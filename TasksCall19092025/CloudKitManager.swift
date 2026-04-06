@@ -72,6 +72,7 @@ final class CloudKitManager: ObservableObject {
         case .restricted: return "حساب iCloud مقيّد"
         case .couldNotDetermine: return "تعذّر تحديد حالة iCloud"
         case .temporarilyUnavailable: return "iCloud غير متاح مؤقتاً"
+        case .available: return "iCloud متاح"
         @unknown default: return "حالة iCloud غير معروفة"
         }
     }

@@ -614,7 +614,7 @@ struct TaskDetailView: View {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
         let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let ext = sourceURL.pathExtension
         let base = sourceURL.deletingPathExtension().lastPathComponent
         let uniqueName = base.isEmpty
@@ -630,12 +630,16 @@ struct TaskDetailView: View {
             }
             let kind = kindForFileExtension(destURL.pathExtension)
             task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
-        } catch { }
+        } catch {
+            #if DEBUG
+            NSLog("⚠️ فشل إضافة مرفق: \(error.localizedDescription)")
+            #endif
+        }
     }
 
     private func addImageAttachment(data: Data, suggestedName: String) {
         let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let ext = (suggestedName as NSString).pathExtension.lowercased()
         let finalExt = ["jpg","jpeg","png","heic"].contains(ext) ? ext : "jpg"
         let base = (suggestedName as NSString).deletingPathExtension
@@ -644,7 +648,11 @@ struct TaskDetailView: View {
         do {
             try data.write(to: url, options: .atomic)
             task.attachments.append(TaskAttachment(fileName: uniqueName, fileURL: url, kind: .image))
-        } catch { }
+        } catch {
+            #if DEBUG
+            NSLog("⚠️ فشل حفظ صورة: \(error.localizedDescription)")
+            #endif
+        }
     }
 
     // MARK: - Steps Section
@@ -753,7 +761,7 @@ struct TaskDetailView: View {
 
     private func renameAttachmentOnDisk(_ oldURL: URL, to newFileName: String) -> URL? {
         let fm = FileManager.default
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
         let newURL = docs.appendingPathComponent(newFileName)
         do {
             if fm.fileExists(atPath: newURL.path) { try fm.removeItem(at: newURL) }

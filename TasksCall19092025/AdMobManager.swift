@@ -90,14 +90,16 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
 
     func loadAd() {
         GADInterstitialAd.load(withAdUnitID: AdConfig.interstitialAdUnitID, request: GADRequest()) { [weak self] ad, error in
-            guard let self = self else { return }
-            if error != nil {
-                self.isAdReady = false
-                return
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if error != nil {
+                    self.isAdReady = false
+                    return
+                }
+                self.interstitialAd = ad
+                self.interstitialAd?.fullScreenContentDelegate = self
+                self.isAdReady = true
             }
-            self.interstitialAd = ad
-            self.interstitialAd?.fullScreenContentDelegate = self
-            self.isAdReady = true
         }
     }
 
@@ -151,14 +153,16 @@ final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentD
 
     func loadAd() {
         GADRewardedAd.load(withAdUnitID: AdConfig.rewardedAdUnitID, request: GADRequest()) { [weak self] ad, error in
-            guard let self = self else { return }
-            if error != nil {
-                self.isAdReady = false
-                return
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if error != nil {
+                    self.isAdReady = false
+                    return
+                }
+                self.rewardedAd = ad
+                self.rewardedAd?.fullScreenContentDelegate = self
+                self.isAdReady = true
             }
-            self.rewardedAd = ad
-            self.rewardedAd?.fullScreenContentDelegate = self
-            self.isAdReady = true
         }
     }
 

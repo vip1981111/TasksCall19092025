@@ -35,7 +35,10 @@ final class TasksStore: ObservableObject {
     let cloudKit = CloudKitManager()
 
     init(filename: String = "tasks_pages.json") {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            fatalError("❌ لا يمكن الوصول إلى مجلد المستندات")
+        }
+
         self.fileURL = docs.appendingPathComponent(filename)
         self.notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         if let ts = UserDefaults.standard.object(forKey: "dailyReminderTime") as? Double {
@@ -70,7 +73,11 @@ final class TasksStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(pages)
             try data.write(to: fileURL, options: [.atomic])
-        } catch { }
+        } catch {
+            #if DEBUG
+            NSLog("⚠️ فشل حفظ البيانات: \(error.localizedDescription)")
+            #endif
+        }
     }
 
     static func defaultPages() -> [TaskPage] {
@@ -110,13 +117,13 @@ final class TasksStore: ObservableObject {
         let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return false }
         guard !isDuplicatePageName(t, excludingID: id) else { return false }
-        _ = withAnimation { pages[i].name = t }
+        withAnimation { pages[i].name = t }
         return true
     }
 
     func deletePage(id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
-        _ = withAnimation { pages.remove(at: i) }
+        let _ = withAnimation { pages.remove(at: i) }
     }
 
     // MARK: - إدارة المهام
@@ -124,7 +131,7 @@ final class TasksStore: ObservableObject {
     func addTask(in pageID: UUID, title: String, priority: TaskPriority) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
         let task = TaskItem(title: title, isDone: false, priority: priority)
-        _ = withAnimation { pages[i].tasks.insert(task, at: 0) }
+        withAnimation { pages[i].tasks.insert(task, at: 0) }
     }
 
     func deleteTask(in pageID: UUID, id: UUID) {
@@ -362,7 +369,10 @@ final class TasksStore: ObservableObject {
             try? fm.removeItem(at: zipURL)
         }
 
-        guard let archive = Archive(url: zipURL, accessMode: .create, preferredEncoding: nil) else {
+        let archive: Archive
+        do {
+            archive = try Archive(url: zipURL, accessMode: .create)
+        } catch {
             return nil
         }
 
@@ -413,7 +423,11 @@ final class TasksStore: ObservableObject {
                                 let end = min(start + size, data.count)
                                 return data.subdata(in: start..<end)
                             }
-                        } catch { }
+                        } catch {
+                            #if DEBUG
+                            NSLog("⚠️ فشل إضافة مرفق للنسخة: \(error.localizedDescription)")
+                            #endif
+                        }
                     }
                 }
             }
@@ -432,8 +446,11 @@ final class TasksStore: ObservableObject {
             let destRoot = fm.temporaryDirectory.appendingPathComponent("Restore-\(UUID().uuidString)")
             try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
 
-            guard let archive = Archive(url: url, accessMode: .read, preferredEncoding: nil) else {
-                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey: "تعذر فتح ملف ZIP"])
+            let archive: Archive
+            do {
+                archive = try Archive(url: url, accessMode: .read)
+            } catch {
+                throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey: "تعذر فتح ملف ZIP: \(error.localizedDescription)"])
             }
 
             for entry in archive {
@@ -444,7 +461,11 @@ final class TasksStore: ObservableObject {
                 }
                 do {
                     _ = try archive.extract(entry, to: outURL, skipCRC32: false)
-                } catch { }
+                } catch {
+                    #if DEBUG
+                    NSLog("⚠️ فشل فك ضغط: \(entry.path) - \(error.localizedDescription)")
+                    #endif
+                }
             }
 
             let jsonURL = destRoot.appendingPathComponent("tasks_pages.json")
@@ -455,7 +476,9 @@ final class TasksStore: ObservableObject {
             let data = try Data(contentsOf: jsonURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
 
-            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+            guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                throw NSError(domain: "import", code: -4, userInfo: [NSLocalizedDescriptionKey: "تعذر الوصول لمجلد المستندات"])
+            }
             let attachmentsSrc = destRoot.appendingPathComponent("Attachments")
 
             if fm.fileExists(atPath: attachmentsSrc.path) {
