@@ -558,7 +558,11 @@ final class TasksStore: ObservableObject {
                 do {
                     try fm.removeItem(at: fileURL)
                     deletedCount += 1
-                } catch { }
+                } catch {
+                    #if DEBUG
+                    NSLog("⚠️ فشل حذف ملف غير مستخدم: \(fileURL.lastPathComponent) - \(error.localizedDescription)")
+                    #endif
+                }
             }
         }
 
