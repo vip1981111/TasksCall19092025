@@ -253,7 +253,10 @@ struct ContentView: View {
                                 Spacer()
                                 Button { showAddTaskSheet = false } label: { Image(systemName: "xmark.circle.fill").imageScale(.medium).foregroundStyle(.secondary) }
                             }
-                            TextField("عنوان المهمة", text: $newTaskTitle).textFieldStyle(.roundedBorder)
+                            TextField("عنوان المهمة", text: $newTaskTitle)
+                                .textFieldStyle(.roundedBorder)
+                                .submitLabel(.done)
+                                .onSubmit { addTask(); showAddTaskSheet = false }
                             HStack(spacing: 8) {
                                 Text("الأولوية").font(.subheadline).foregroundStyle(.secondary)
                                 Spacer()
