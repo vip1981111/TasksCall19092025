@@ -7,6 +7,8 @@
 
 import SwiftUI
 import Combine
+
+#if !targetEnvironment(macCatalyst)
 import GoogleMobileAds
 
 // MARK: - Ad Unit IDs
@@ -132,3 +134,32 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
         }
     }
 }
+
+#else
+// MARK: - Mac Catalyst Stubs (الإعلانات غير مدعومة على الماك)
+
+struct AdConfig {
+    static let bannerAdUnitID = ""
+    static let interstitialAdUnitID = ""
+}
+
+struct BannerAdView: View {
+    var adUnitID: String = ""
+    var body: some View { EmptyView() }
+}
+
+struct AdaptiveBannerAdView: View {
+    var adUnitID: String = ""
+    var body: some View { EmptyView() }
+}
+
+@MainActor
+final class InterstitialAdManager: ObservableObject {
+    @Published var isAdReady: Bool = false
+    var showEveryNActions: Int = 3
+    func loadAd() {}
+    func trackAction() {}
+    func showAd() {}
+}
+
+#endif

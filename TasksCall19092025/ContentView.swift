@@ -151,11 +151,13 @@ struct ContentView: View {
                         .padding(.top, 4)
                     }
 
+                    #if !targetEnvironment(macCatalyst)
                     if !subscriptionManager.isPremium {
                         AdaptiveBannerAdView()
                             .frame(height: 50)
                             .padding(.bottom, 4)
                     }
+                    #endif
                 }
 
                 if currentPage?.isDaily != true {

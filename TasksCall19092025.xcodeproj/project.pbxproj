@@ -8,7 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A8CA71C02EA24EDD00BEAE4A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A8CA71BF2EA24EDD00BEAE4A /* ZIPFoundation */; };
-		B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B1AD000200000002DEADBEEF /* GoogleMobileAds */; };
+		B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; platformFilters = (ios, ); productRef = B1AD000200000002DEADBEEF /* GoogleMobileAds */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -402,6 +402,7 @@
 		B1AD000200000002DEADBEEF /* GoogleMobileAds */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			platformFilters = (ios, );
 			productName = GoogleMobileAds;
 		};
 /* End XCSwiftPackageProductDependency section */

@@ -7,9 +7,11 @@
 
 import SwiftUI
 import UserNotifications
+#if !targetEnvironment(macCatalyst)
 import GoogleMobileAds
 import AppTrackingTransparency
 import AdSupport
+#endif
 
 final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -28,7 +30,9 @@ struct TasksCall19092025App: App {
     @StateObject private var subscriptionManager = SubscriptionManager()
     @StateObject private var themeManager = ThemeManager()
     @Environment(\.scenePhase) private var scenePhase
+    #if !targetEnvironment(macCatalyst)
     @State private var hasRequestedATT = false
+    #endif
 
     init() {
         UNUserNotificationCenter.current().delegate = _notificationHandler
@@ -43,14 +47,17 @@ struct TasksCall19092025App: App {
                 .environmentObject(themeManager)
                 .environment(\.layoutDirection, .rightToLeft)
                 .forceRTL()
+                #if !targetEnvironment(macCatalyst)
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active && !hasRequestedATT {
                         requestATTPermission()
                     }
                 }
+                #endif
         }
     }
 
+    #if !targetEnvironment(macCatalyst)
     private func requestATTPermission() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             if ATTrackingManager.trackingAuthorizationStatus == .notDetermined {
@@ -74,4 +81,5 @@ struct TasksCall19092025App: App {
             }
         }
     }
+    #endif
 }
