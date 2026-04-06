@@ -12,7 +12,7 @@ import ZIPFoundation
 
 @MainActor
 final class TasksStore: ObservableObject {
-    @Published var pages: [TaskPage] = [] { didSet { save() } }
+    @Published var pages: [TaskPage] = [] { didSet { save(); syncToCloudDebounced() } }
     @Published var notificationsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
@@ -31,6 +31,8 @@ final class TasksStore: ObservableObject {
     }
 
     private let fileURL: URL
+    private var syncTask: Task<Void, Never>?
+    let cloudSync = CloudSyncManager()
 
     init(filename: String = "tasks_pages.json") {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -568,5 +570,47 @@ final class TasksStore: ObservableObject {
         }
 
         return unusedCount
+    }
+
+    // MARK: - المزامنة السحابية
+
+    /// مزامنة مؤجلة (debounced) — تنتظر 2 ثانية بعد آخر تغيير قبل الرفع
+    private func syncToCloudDebounced() {
+        syncTask?.cancel()
+        syncTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await cloudSync.uploadPages(pages)
+        }
+    }
+
+    /// مزامنة فورية — رفع البيانات الآن
+    func syncNow() async {
+        await cloudSync.uploadPages(pages)
+    }
+
+    /// تحميل البيانات من السحابة واستبدال المحلية
+    func pullFromCloud() async -> Bool {
+        guard let cloudPages = await cloudSync.downloadPages() else { return false }
+        self.pages = cloudPages
+        return true
+    }
+
+    /// بدء الاستماع للتغييرات من أجهزة أخرى
+    func startCloudListener() {
+        cloudSync.startListening { [weak self] pages in
+            guard let self = self else { return }
+            // تحديث فقط إذا كانت البيانات مختلفة
+            let localData = try? JSONEncoder().encode(self.pages)
+            let remoteData = try? JSONEncoder().encode(pages)
+            if localData != remoteData {
+                self.pages = pages
+            }
+        }
+    }
+
+    /// إيقاف الاستماع
+    func stopCloudListener() {
+        cloudSync.stopListening()
     }
 }

@@ -6,9 +6,12 @@
 //
 
 import SwiftUI
-import VisionKit
 import PhotosUI
 import QuickLook
+
+#if !targetEnvironment(macCatalyst)
+import VisionKit
+#endif
 
 // MARK: - Documents Browser
 
@@ -104,8 +107,9 @@ struct QLPreview: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Document Scanner wrapper
+// MARK: - Document Scanner wrapper (iOS only — غير متوفر على الماك)
 
+#if !targetEnvironment(macCatalyst)
 struct DocumentScannerView: UIViewControllerRepresentable {
     var onScan: ([UIImage]) -> Void
 
@@ -142,6 +146,7 @@ struct DocumentScannerView: UIViewControllerRepresentable {
         }
     }
 }
+#endif
 
 // MARK: - PHPicker wrapper (iOS 14+)
 

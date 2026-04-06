@@ -6,9 +6,12 @@
 //
 
 import SwiftUI
-import VisionKit
 import PhotosUI
 import QuickLook
+
+#if !targetEnvironment(macCatalyst)
+import VisionKit
+#endif
 
 struct TaskDetailView: View {
     @Binding var task: TaskItem
@@ -88,6 +91,7 @@ struct TaskDetailView: View {
                 }
             }
         }
+        #if !targetEnvironment(macCatalyst)
         .sheet(isPresented: $isDocumentScannerPresented) {
             DocumentScannerView { scannedImages in
                 for image in scannedImages {
@@ -97,6 +101,7 @@ struct TaskDetailView: View {
                 }
             }
         }
+        #endif
         .sheet(isPresented: $showPreview) { QLPreview(urls: previewURLs).ignoresSafeArea() }
         .alert("تعديل اسم المرفق", isPresented: $showRenameAttachmentAlert) {
             TextField("اسم المرفق", text: $renameAttachmentText)
@@ -567,7 +572,9 @@ struct TaskDetailView: View {
                 Menu {
                     Button { isFileImporterPresented = true } label: { Label("مستند/ملف", systemImage: "doc") }
                     Button { isPhotoPickerPresented = true } label: { Label("صورة من الصور", systemImage: "photo") }
+                    #if !targetEnvironment(macCatalyst)
                     Button { isDocumentScannerPresented = true } label: { Label("مسح ضوئي", systemImage: "doc.text.viewfinder") }
+                    #endif
                 } label: { Label("إضافة", systemImage: "plus.circle.fill") }
             }
             if task.attachments.isEmpty {
