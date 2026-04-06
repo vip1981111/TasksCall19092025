@@ -21,7 +21,7 @@ struct AdConfig {
     #else
     static let bannerAdUnitID = "ca-app-pub-2246849300811913/2034108997"
     static let interstitialAdUnitID = "ca-app-pub-2246849300811913/3798509006"
-    static let rewardedAdUnitID = "ca-app-pub-2246849300811913/REWARDED_ID_HERE" // ← غيّره بمعرفك
+    static let rewardedAdUnitID = "ca-app-pub-2246849300811913/8067571202"
     #endif
 }
 
