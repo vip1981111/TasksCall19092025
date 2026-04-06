@@ -256,6 +256,14 @@ struct TaskDetailView: View {
                             .environment(\.locale, Locale(identifier: "ar"))
                             .environment(\.calendar, Calendar(identifier: .gregorian))
                             .tint(theme.accentColor)
+                            .onChange(of: selectedReminderDate) { _, _ in
+                                // إغلاق التقويم تلقائياً بعد اختيار التاريخ
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showDateCalendar = false
+                                    }
+                                }
+                            }
                         }
                         .padding(8)
                         .background(theme.reminderBackground.opacity(0.5))
