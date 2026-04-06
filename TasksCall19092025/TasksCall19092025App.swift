@@ -10,8 +10,6 @@ import UserNotifications
 import GoogleMobileAds
 import AppTrackingTransparency
 import AdSupport
-import FirebaseCore
-import FirebaseAuth
 
 final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -29,14 +27,11 @@ struct TasksCall19092025App: App {
     @StateObject private var interstitialAd = InterstitialAdManager()
     @StateObject private var subscriptionManager = SubscriptionManager()
     @StateObject private var themeManager = ThemeManager()
-    @StateObject private var firebaseManager = FirebaseManager.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasRequestedATT = false
 
     init() {
         UNUserNotificationCenter.current().delegate = _notificationHandler
-        // تهيئة Firebase
-        FirebaseManager.configure()
     }
 
     var body: some Scene {
@@ -46,18 +41,11 @@ struct TasksCall19092025App: App {
                 .environmentObject(interstitialAd)
                 .environmentObject(subscriptionManager)
                 .environmentObject(themeManager)
-                .environmentObject(firebaseManager)
                 .environment(\.layoutDirection, .rightToLeft)
                 .forceRTL()
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active && !hasRequestedATT {
                         requestATTPermission()
-                    }
-                    if newPhase == .active && firebaseManager.syncEnabled {
-                        store.startCloudListener()
-                    }
-                    if newPhase == .background {
-                        store.stopCloudListener()
                     }
                 }
         }

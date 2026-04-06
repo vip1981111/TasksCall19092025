@@ -9,9 +9,6 @@
 /* Begin PBXBuildFile section */
 		A8CA71C02EA24EDD00BEAE4A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A8CA71BF2EA24EDD00BEAE4A /* ZIPFoundation */; };
 		B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B1AD000200000002DEADBEEF /* GoogleMobileAds */; };
-		C1FB000100000001F1BEBA5E /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = C1FB000200000002F1BEBA5E /* FirebaseAuth */; };
-		C1FB000300000003F1BEBA5E /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = C1FB000400000004F1BEBA5E /* FirebaseFirestore */; };
-		C1FB000500000005F1BEBA5E /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = C1FB000600000006F1BEBA5E /* FirebaseAnalytics */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,9 +43,6 @@
 			files = (
 				A8CA71C02EA24EDD00BEAE4A /* ZIPFoundation in Frameworks */,
 				B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */,
-				C1FB000100000001F1BEBA5E /* FirebaseAuth in Frameworks */,
-				C1FB000300000003F1BEBA5E /* FirebaseFirestore in Frameworks */,
-				C1FB000500000005F1BEBA5E /* FirebaseAnalytics in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,9 +87,6 @@
 			packageProductDependencies = (
 				A8CA71BF2EA24EDD00BEAE4A /* ZIPFoundation */,
 				B1AD000200000002DEADBEEF /* GoogleMobileAds */,
-				C1FB000200000002F1BEBA5E /* FirebaseAuth */,
-				C1FB000400000004F1BEBA5E /* FirebaseFirestore */,
-				C1FB000600000006F1BEBA5E /* FirebaseAnalytics */,
 			);
 			productName = TasksCall19092025;
 			productReference = A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */;
@@ -129,7 +120,6 @@
 			packageReferences = (
 				A8CA71BE2EA24EDD00BEAE4A /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
-				C1FB000700000007F1BEBA5E /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A82507112E7DBB5800F6ADE8 /* Products */;
@@ -401,14 +391,6 @@
 				minimumVersion = 11.0.0;
 			};
 		};
-		C1FB000700000007F1BEBA5E /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 11.0.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -421,21 +403,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B1AD000300000003DEADBEEF /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
 			productName = GoogleMobileAds;
-		};
-		C1FB000200000002F1BEBA5E /* FirebaseAuth */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C1FB000700000007F1BEBA5E /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAuth;
-		};
-		C1FB000400000004F1BEBA5E /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C1FB000700000007F1BEBA5E /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
-		};
-		C1FB000600000006F1BEBA5E /* FirebaseAnalytics */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C1FB000700000007F1BEBA5E /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAnalytics;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

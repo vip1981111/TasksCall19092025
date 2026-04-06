@@ -13,15 +13,7 @@ struct SettingsView: View {
     @ObservedObject var store: TasksStore
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var subscriptionManager: SubscriptionManager
-    @EnvironmentObject var firebaseManager: FirebaseManager
     @State private var showPaywall: Bool = false
-    @State private var showSyncAlert: Bool = false
-    @State private var syncAlertMessage: String = ""
-    @State private var showSignInSheet: Bool = false
-    @State private var signInEmail: String = ""
-    @State private var signInPassword: String = ""
-    @State private var isSignUp: Bool = false
-    @State private var authError: String = ""
 
     private struct ShareItem: Identifiable { let id = UUID(); let url: URL }
     @State private var shareItem: ShareItem? = nil
@@ -45,7 +37,6 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 premiumSection
-                cloudSyncSection
                 ThemePickerView(themeManager: themeManager, showPaywall: $showPaywall)
                 notificationsSection
                 backupSection
@@ -235,184 +226,6 @@ struct SettingsView: View {
             }
         } footer: {
             Text("يساعد هذا الخيار على توفير المساحة ومنع تراكم ملفات غير مستخدمة داخل التطبيق.")
-        }
-    }
-
-    // MARK: - Cloud Sync Section
-
-    private var cloudSyncSection: some View {
-        Section {
-            if firebaseManager.isSignedIn {
-                // حالة تسجيل الدخول
-                HStack {
-                    Image(systemName: "icloud.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("متصل بالسحابة")
-                            .fontWeight(.medium)
-                        if let email = firebaseManager.userEmail {
-                            Text(email).font(.caption).foregroundStyle(.secondary)
-                        } else if firebaseManager.isAnonymous {
-                            Text("حساب مجهول").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    if store.cloudSync.isSyncing {
-                        ProgressView().scaleEffect(0.8)
-                    } else {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    }
-                }
-
-                Toggle("المزامنة التلقائية", isOn: $firebaseManager.syncEnabled)
-                    .onChange(of: firebaseManager.syncEnabled) { _, newVal in
-                        if newVal {
-                            store.startCloudListener()
-                            Task { await store.syncNow() }
-                        } else {
-                            store.stopCloudListener()
-                        }
-                    }
-
-                if let lastSync = store.cloudSync.lastSyncDate {
-                    HStack {
-                        Text("آخر مزامنة")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(lastSync, style: .relative)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("مزامنة الآن") {
-                    Task {
-                        await store.syncNow()
-                        syncAlertMessage = "تمت المزامنة بنجاح"
-                        showSyncAlert = true
-                    }
-                }
-
-                Button("تحميل من السحابة") {
-                    Task {
-                        let success = await store.pullFromCloud()
-                        syncAlertMessage = success ? "تم تحميل البيانات من السحابة" : "لا توجد بيانات في السحابة"
-                        showSyncAlert = true
-                    }
-                }
-
-                // ربط حساب مجهول بإيميل
-                if firebaseManager.isAnonymous {
-                    Button("ربط بحساب إيميل") {
-                        isSignUp = false
-                        showSignInSheet = true
-                    }
-                    .foregroundStyle(.blue)
-                }
-
-                Button("تسجيل خروج", role: .destructive) {
-                    store.stopCloudListener()
-                    try? firebaseManager.signOut()
-                }
-            } else {
-                // غير مسجل دخول
-                HStack {
-                    Image(systemName: "icloud.slash")
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("المزامنة السحابية")
-                            .fontWeight(.medium)
-                        Text("زامن مهامك بين أجهزتك")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("دخول سريع (بدون حساب)") {
-                    Task {
-                        do {
-                            try await firebaseManager.signInAnonymously()
-                            store.startCloudListener()
-                            await store.syncNow()
-                        } catch {
-                            syncAlertMessage = "فشل الاتصال: \(error.localizedDescription)"
-                            showSyncAlert = true
-                        }
-                    }
-                }
-
-                Button("تسجيل دخول بالإيميل") {
-                    isSignUp = false
-                    showSignInSheet = true
-                }
-
-                Button("إنشاء حساب جديد") {
-                    isSignUp = true
-                    showSignInSheet = true
-                }
-            }
-
-            if let error = store.cloudSync.syncError {
-                Text(error)
-                    .font(.caption).foregroundStyle(.red)
-            }
-        } header: {
-            Label("المزامنة السحابية", systemImage: "icloud")
-        }
-        .alert("المزامنة", isPresented: $showSyncAlert) {
-            Button("حسنًا", role: .cancel) { }
-        } message: {
-            Text(syncAlertMessage)
-        }
-        .sheet(isPresented: $showSignInSheet) {
-            signInSheet
-        }
-    }
-
-    private var signInSheet: some View {
-        NavigationStack {
-            Form {
-                Section(isSignUp ? "إنشاء حساب جديد" : (firebaseManager.isAnonymous ? "ربط الحساب بإيميل" : "تسجيل الدخول")) {
-                    TextField("البريد الإلكتروني", text: $signInEmail)
-                        .textContentType(.emailAddress)
-                        .keyboardType(.emailAddress)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    SecureField("كلمة المرور", text: $signInPassword)
-                        .textContentType(isSignUp ? .newPassword : .password)
-                }
-
-                if !authError.isEmpty {
-                    Text(authError).font(.caption).foregroundStyle(.red)
-                }
-
-                Button(isSignUp ? "إنشاء حساب" : (firebaseManager.isAnonymous ? "ربط الحساب" : "تسجيل دخول")) {
-                    Task {
-                        authError = ""
-                        do {
-                            if firebaseManager.isAnonymous && !isSignUp {
-                                try await firebaseManager.linkAnonymousAccount(email: signInEmail, password: signInPassword)
-                            } else if isSignUp {
-                                try await firebaseManager.signUp(email: signInEmail, password: signInPassword)
-                            } else {
-                                try await firebaseManager.signIn(email: signInEmail, password: signInPassword)
-                            }
-                            store.startCloudListener()
-                            await store.syncNow()
-                            showSignInSheet = false
-                            signInEmail = ""
-                            signInPassword = ""
-                        } catch {
-                            authError = error.localizedDescription
-                        }
-                    }
-                }
-                .disabled(signInEmail.isEmpty || signInPassword.count < 6)
-            }
-            .navigationTitle(isSignUp ? "حساب جديد" : "تسجيل دخول")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("إلغاء") { showSignInSheet = false }
-                }
-            }
         }
     }
 
