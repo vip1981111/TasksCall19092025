@@ -334,7 +334,8 @@ struct ContentView: View {
                     if let daily = store.pages.first(where: { $0.isDaily }) { pageChip(for: daily) }
                     ForEach(store.pages.filter { !$0.isDaily }) { page in pageChip(for: page) }
                 }
-                .padding(.horizontal)
+                .padding(.leading)
+                .padding(.trailing, 56) // مساحة لزر + حتى لا يغطي آخر صفحة
             }
             Button { isAddingPage = true } label: {
                 Image(systemName: "plus.circle.fill").font(.title2).padding(10).background(Color(.systemBackground)).clipShape(Circle()).shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
