@@ -44,6 +44,11 @@ final class CloudKitManager: ObservableObject {
             UserDefaults.standard.set(Array(deletedTaskIds), forKey: "sync_deleted_task_ids")
         }
     }
+    private(set) var deletedPageIds: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(Array(deletedPageIds), forKey: "sync_deleted_page_ids")
+        }
+    }
 
     // MARK: - Init
     init() {
@@ -53,6 +58,9 @@ final class CloudKitManager: ObservableObject {
         }
         if let saved = UserDefaults.standard.array(forKey: "sync_deleted_task_ids") as? [String] {
             self.deletedTaskIds = Set(saved)
+        }
+        if let saved = UserDefaults.standard.array(forKey: "sync_deleted_page_ids") as? [String] {
+            self.deletedPageIds = Set(saved)
         }
 
         self.container = CKContainer(identifier: containerID)
@@ -69,6 +77,10 @@ final class CloudKitManager: ObservableObject {
     // MARK: - تتبع الحذف (Tombstone)
     func trackDeletion(_ id: UUID) {
         deletedTaskIds.insert(id.uuidString)
+    }
+
+    func trackPageDeletion(_ id: UUID) {
+        deletedPageIds.insert(id.uuidString)
     }
 
     // MARK: - فحص حالة iCloud

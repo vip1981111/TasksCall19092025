@@ -123,6 +123,7 @@ final class TasksStore: ObservableObject {
 
     func deletePage(id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
+        cloudKit.trackPageDeletion(id)
         let _ = withAnimation { pages.remove(at: i) }
     }
 
@@ -651,19 +652,18 @@ final class TasksStore: ObservableObject {
 
     /// استعادة تلقائية بعد إعادة تثبيت التطبيق
     func tryAutoRestore() async {
-        // إذا فيه بيانات محلية حقيقية (مو default) لا تستعيد
-        let hasRealData = pages.contains { page in
-            page.tasks.contains { !$0.title.isEmpty }
-        }
-        let isDefault = pages.count == 3
-            && pages[0].isDaily && pages[0].tasks.isEmpty
-            && pages[1].name == "عام" && pages[1].tasks.count == 1
-            && pages[2].name == "خاص" && pages[2].tasks.count == 2
-        guard !hasRealData || isDefault else { return }
-
         guard cloudKit.iCloudAvailable else { return }
+
+        // كشف البيانات الافتراضية — لو المستخدم ما أضاف شي بعد
+        let defaultTaskTitles: Set<String> = ["كتابة تقرير", "قراءة البريد", "مراجعة المهام"]
+        let allTaskTitles = Set(pages.flatMap { $0.tasks.map { $0.title } })
+        let isDefault = allTaskTitles.isSubset(of: defaultTaskTitles)
+
+        guard isDefault else { return }
+
         guard let remoteData = await cloudKit.download() else { return }
 
+        // استبدال كامل — لا دمج مع الافتراضية
         applyMergedPages(from: remoteData)
     }
 
@@ -677,10 +677,11 @@ final class TasksStore: ObservableObject {
 
     private func generateSyncJSON() -> Data {
         let backup = SyncBackup(
-            version: "1.0",
+            version: "1.1",
             syncDate: Date(),
             pages: pages,
-            deletedIds: Array(cloudKit.deletedTaskIds)
+            deletedIds: Array(cloudKit.deletedTaskIds),
+            deletedPageIds: Array(cloudKit.deletedPageIds)
         )
         return (try? JSONEncoder().encode(backup)) ?? Data()
     }
@@ -693,15 +694,25 @@ final class TasksStore: ObservableObject {
             return local // فشل فك التشفير — أرجع المحلي
         }
 
-        // جمع كل الـ deletedIds
+        // جمع كل الـ deletedIds (مهام)
         let allDeletedIds: Set<String> = Set(localBackup.deletedIds)
             .union(Set(remoteBackup.deletedIds))
             .union(cloudKit.deletedTaskIds)
+
+        // جمع كل الـ deletedPageIds (صفحات)
+        let allDeletedPageIds: Set<String> = Set(localBackup.deletedPageIds)
+            .union(Set(remoteBackup.deletedPageIds))
+            .union(cloudKit.deletedPageIds)
 
         // تحديث الـ tombstones المحلية
         for id in allDeletedIds {
             if let uuid = UUID(uuidString: id) {
                 cloudKit.trackDeletion(uuid)
+            }
+        }
+        for id in allDeletedPageIds {
+            if let uuid = UUID(uuidString: id) {
+                cloudKit.trackPageDeletion(uuid)
             }
         }
 
@@ -710,21 +721,36 @@ final class TasksStore: ObservableObject {
         var pageOrder: [UUID] = []
 
         for page in localBackup.pages {
+            // تجاهل الصفحات المحذوفة
+            if allDeletedPageIds.contains(page.id.uuidString) { continue }
             mergedPagesMap[page.id] = page
             pageOrder.append(page.id)
         }
 
         for page in remoteBackup.pages {
+            // تجاهل الصفحات المحذوفة
+            if allDeletedPageIds.contains(page.id.uuidString) { continue }
+
             if var existingPage = mergedPagesMap[page.id] {
-                // الصفحة موجودة — ادمج المهام
+                // الصفحة موجودة بنفس الـ ID — ادمج المهام
                 existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
                 mergedPagesMap[page.id] = existingPage
             } else {
-                // صفحة جديدة من الجهاز الآخر
-                var newPage = page
-                newPage.tasks = page.tasks.filter { !allDeletedIds.contains($0.id.uuidString) }
-                mergedPagesMap[page.id] = newPage
-                pageOrder.append(page.id)
+                // صفحة جديدة — تحقق من عدم تكرار الاسم
+                let nameExists = mergedPagesMap.values.contains { $0.name == page.name }
+                if nameExists {
+                    // ادمج مهام هذه الصفحة مع الصفحة المكررة بالاسم
+                    if let existingId = mergedPagesMap.first(where: { $0.value.name == page.name })?.key {
+                        var existingPage = mergedPagesMap[existingId]!
+                        existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
+                        mergedPagesMap[existingId] = existingPage
+                    }
+                } else {
+                    var newPage = page
+                    newPage.tasks = page.tasks.filter { !allDeletedIds.contains($0.id.uuidString) }
+                    mergedPagesMap[page.id] = newPage
+                    pageOrder.append(page.id)
+                }
             }
         }
 
@@ -735,10 +761,11 @@ final class TasksStore: ObservableObject {
         }
 
         let merged = SyncBackup(
-            version: "1.0",
+            version: "1.1",
             syncDate: Date(),
             pages: mergedPages,
-            deletedIds: Array(allDeletedIds)
+            deletedIds: Array(allDeletedIds),
+            deletedPageIds: Array(allDeletedPageIds)
         )
 
         return (try? JSONEncoder().encode(merged)) ?? local
@@ -792,4 +819,23 @@ struct SyncBackup: Codable {
     let syncDate: Date
     let pages: [TaskPage]
     let deletedIds: [String]
+    let deletedPageIds: [String]
+
+    init(version: String, syncDate: Date, pages: [TaskPage], deletedIds: [String], deletedPageIds: [String] = []) {
+        self.version = version
+        self.syncDate = syncDate
+        self.pages = pages
+        self.deletedIds = deletedIds
+        self.deletedPageIds = deletedPageIds
+    }
+
+    // دعم الملفات القديمة اللي ما فيها deletedPageIds
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        syncDate = try container.decode(Date.self, forKey: .syncDate)
+        pages = try container.decode([TaskPage].self, forKey: .pages)
+        deletedIds = try container.decode([String].self, forKey: .deletedIds)
+        deletedPageIds = try container.decodeIfPresent([String].self, forKey: .deletedPageIds) ?? []
+    }
 }
