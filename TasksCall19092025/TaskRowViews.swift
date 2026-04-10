@@ -103,7 +103,7 @@ struct TaskCardRow: View {
                 }.buttonStyle(.plain)
 
                 HStack(spacing: 6) {
-                    Text(task.title).lineLimit(1).truncationMode(.tail).multilineTextAlignment(.trailing)
+                    Text(task.title).lineLimit(2).multilineTextAlignment(.trailing)
                         .strikethrough(task.isDone, color: .secondary)
                         .foregroundStyle(task.isDone ? .secondary : .primary)
                     if task.isInDaily { Image(systemName: "sun.max.fill").foregroundStyle(.yellow).imageScale(.small) }
