@@ -17,7 +17,7 @@ struct ContentView: View {
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
     @State private var searchText: String = ""
-    @State private var filter: TasksFilter = .all
+    @State private var filter: TasksFilter = .active
     @State private var defaultPriorityForNewTask: TaskPriority = .medium
     @State private var sortByPriority: Bool = true
     @State private var showPriorityPickerForNew: Bool = false
