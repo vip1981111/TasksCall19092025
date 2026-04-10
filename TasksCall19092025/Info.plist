@@ -139,5 +139,9 @@
 	</array>
 	<key>NSUserTrackingUsageDescription</key>
 	<string>This app uses your data to provide personalized ads. You can decline and still use the app with non-personalized ads.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

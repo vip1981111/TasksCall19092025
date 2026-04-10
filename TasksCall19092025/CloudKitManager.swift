@@ -3,7 +3,8 @@
 //  TasksCall19092025 (أنجز)
 //
 //  مزامنة البيانات عبر iCloud باستخدام CloudKit
-//  لا يحتاج تسجيل دخول — يستخدم حساب iCloud الموجود تلقائياً
+//  مبني على تجربة masroofy الناجحة — يشمل:
+//  Conflict Resolution, Merge by ID, Tombstone, Push Notifications
 //
 
 import SwiftUI
@@ -32,9 +33,17 @@ final class CloudKitManager: ObservableObject {
     private let containerID = "iCloud.com.MHD.TasksCall19092025"
     private let recordType = "TaskPages"
     private let recordID = CKRecord.ID(recordName: "userTaskPages")
+    private let subscriptionID = "taskpages-backup-changes"
 
     private var container: CKContainer
     private var privateDB: CKDatabase
+
+    // MARK: - Tombstone — تتبع العناصر المحذوفة
+    private(set) var deletedTaskIds: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(Array(deletedTaskIds), forKey: "sync_deleted_task_ids")
+        }
+    }
 
     // MARK: - Init
     init() {
@@ -42,12 +51,24 @@ final class CloudKitManager: ObservableObject {
         if let ts = UserDefaults.standard.object(forKey: "lastCloudKitSync") as? Double {
             self.lastSyncDate = Date(timeIntervalSince1970: ts)
         }
+        if let saved = UserDefaults.standard.array(forKey: "sync_deleted_task_ids") as? [String] {
+            self.deletedTaskIds = Set(saved)
+        }
 
         self.container = CKContainer(identifier: containerID)
         self.privateDB = container.privateCloudDatabase
 
-        // فحص حالة iCloud
-        Task { await checkiCloudStatus() }
+        Task {
+            await checkiCloudStatus()
+            if iCloudAvailable {
+                await subscribeToChanges()
+            }
+        }
+    }
+
+    // MARK: - تتبع الحذف (Tombstone)
+    func trackDeletion(_ id: UUID) {
+        deletedTaskIds.insert(id.uuidString)
     }
 
     // MARK: - فحص حالة iCloud
@@ -70,30 +91,26 @@ final class CloudKitManager: ObservableObject {
         switch status {
         case .noAccount: return "لا يوجد حساب iCloud. سجّل دخول من الإعدادات"
         case .restricted: return "حساب iCloud مقيّد"
-        case .couldNotDetermine: return "تعذّر تحديد حالة iCloud"
+        case .couldNotDetermine: return "تعذّر تحديد حالة iCloud — تحقق من الـ entitlements"
         case .temporarilyUnavailable: return "iCloud غير متاح مؤقتاً"
         case .available: return "iCloud متاح"
         @unknown default: return "حالة iCloud غير معروفة"
         }
     }
 
-    // MARK: - رفع البيانات إلى iCloud
-    func upload(pages: [TaskPage]) async {
+    // MARK: - رفع البيانات مع Conflict Resolution
+    func upload(data: Data) async {
         guard iCloudAvailable && syncEnabled else { return }
 
         isSyncing = true
         syncError = nil
 
         do {
-            // تحويل البيانات إلى JSON
-            let data = try JSONEncoder().encode(pages)
-
-            // محاولة جلب السجل الموجود أو إنشاء جديد
+            // Fetch-then-save: جلب السجل الموجود أو إنشاء جديد
             let record: CKRecord
             do {
                 record = try await privateDB.record(for: recordID)
             } catch {
-                // السجل غير موجود — ننشئ جديد
                 record = CKRecord(recordType: recordType, recordID: recordID)
             }
 
@@ -101,7 +118,17 @@ final class CloudKitManager: ObservableObject {
             record["lastModified"] = Date() as CKRecordValue
             record["deviceName"] = deviceName() as CKRecordValue
 
-            try await privateDB.save(record)
+            do {
+                try await privateDB.save(record)
+            } catch let ckError as CKError where ckError.code == .serverRecordChanged {
+                // Conflict Resolution: خذ نسخة السيرفر وحدّثها
+                if let serverRecord = ckError.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
+                    serverRecord["pagesData"] = data as CKRecordValue
+                    serverRecord["lastModified"] = Date() as CKRecordValue
+                    serverRecord["deviceName"] = deviceName() as CKRecordValue
+                    try await privateDB.save(serverRecord)
+                }
+            }
 
             self.lastSyncDate = Date()
             self.isSyncing = false
@@ -112,7 +139,7 @@ final class CloudKitManager: ObservableObject {
     }
 
     // MARK: - تحميل البيانات من iCloud
-    func download() async -> [TaskPage]? {
+    func download() async -> Data? {
         guard iCloudAvailable else { return nil }
 
         isSyncing = true
@@ -127,10 +154,9 @@ final class CloudKitManager: ObservableObject {
                 return nil
             }
 
-            let pages = try JSONDecoder().decode([TaskPage].self, from: data)
             self.lastSyncDate = Date()
             self.isSyncing = false
-            return pages
+            return data
         } catch let ckError as CKError where ckError.code == .unknownItem {
             // لا يوجد سجل بعد — طبيعي لأول مرة
             self.isSyncing = false
@@ -140,6 +166,42 @@ final class CloudKitManager: ObservableObject {
             self.isSyncing = false
             return nil
         }
+    }
+
+    // MARK: - الاشتراك في التغييرات (Push Notifications)
+    func subscribeToChanges() async {
+        // تحقق من وجود اشتراك سابق
+        do {
+            let _ = try await privateDB.subscription(for: subscriptionID)
+            return // موجود بالفعل
+        } catch {
+            // لا يوجد — ننشئ واحد
+        }
+
+        let subscription = CKQuerySubscription(
+            recordType: recordType,
+            predicate: NSPredicate(value: true),
+            subscriptionID: subscriptionID,
+            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+        )
+
+        let notificationInfo = CKSubscription.NotificationInfo()
+        notificationInfo.shouldSendContentAvailable = true  // Silent push
+        subscription.notificationInfo = notificationInfo
+
+        do {
+            try await privateDB.save(subscription)
+        } catch {
+            #if DEBUG
+            print("CloudKit subscription error: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    // MARK: - معالجة إشعارات من أجهزة أخرى
+    func handleRemoteNotification(userInfo: [AnyHashable: Any]) -> Bool {
+        let notification = CKNotification(fromRemoteNotificationDictionary: userInfo)
+        return notification?.subscriptionID == subscriptionID
     }
 
     // MARK: - حذف بيانات iCloud

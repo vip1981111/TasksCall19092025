@@ -13,18 +13,42 @@ import AppTrackingTransparency
 import AdSupport
 #endif
 
-final class NotificationHandler: NSObject, UNUserNotificationCenterDelegate {
+// MARK: - AppDelegate للإشعارات و CloudKit Push
+
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        // تسجيل للإشعارات البعيدة (CloudKit push)
+        application.registerForRemoteNotifications()
+        return true
+    }
+
+    // عرض الإشعارات أثناء فتح التطبيق
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list, .sound])
     }
+
+    // معالجة إشعارات CloudKit من أجهزة أخرى
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        // نخبر الـ store عن التغيير عبر NotificationCenter
+        NotificationCenter.default.post(name: .cloudKitRemoteChange, object: userInfo)
+        completionHandler(.newData)
+    }
 }
 
-private let _notificationHandler = NotificationHandler()
+extension Notification.Name {
+    static let cloudKitRemoteChange = Notification.Name("cloudKitRemoteChange")
+}
 
 @main
 struct TasksCall19092025App: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var store = TasksStore()
     @StateObject private var interstitialAd = InterstitialAdManager()
     @StateObject private var rewardedAd = RewardedAdManager()
@@ -34,10 +58,6 @@ struct TasksCall19092025App: App {
     #if !targetEnvironment(macCatalyst)
     @State private var hasRequestedATT = false
     #endif
-
-    init() {
-        UNUserNotificationCenter.current().delegate = _notificationHandler
-    }
 
     var body: some Scene {
         WindowGroup {
@@ -49,13 +69,30 @@ struct TasksCall19092025App: App {
                 .environmentObject(themeManager)
                 .environment(\.layoutDirection, .rightToLeft)
                 .forceRTL()
-                #if !targetEnvironment(macCatalyst)
                 .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active && !hasRequestedATT {
-                        requestATTPermission()
+                    if newPhase == .active {
+                        // Auto-sync عند فتح التطبيق
+                        if store.cloudKit.syncEnabled {
+                            Task { await store.syncNow() }
+                        }
+                        #if !targetEnvironment(macCatalyst)
+                        if !hasRequestedATT {
+                            requestATTPermission()
+                        }
+                        #endif
                     }
                 }
-                #endif
+                .task {
+                    // Auto-restore بعد إعادة التثبيت
+                    await store.tryAutoRestore()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .cloudKitRemoteChange)) { notification in
+                    guard let userInfo = notification.object as? [AnyHashable: Any] else { return }
+                    let isCloudKit = store.cloudKit.handleRemoteNotification(userInfo: userInfo)
+                    if isCloudKit {
+                        Task { await store.handleRemoteSync() }
+                    }
+                }
         }
     }
 

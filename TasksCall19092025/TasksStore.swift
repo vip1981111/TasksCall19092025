@@ -136,6 +136,7 @@ final class TasksStore: ObservableObject {
 
     func deleteTask(in pageID: UUID, id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        trackTaskDeletion(id)
         withAnimation { pages[i].tasks.removeAll { $0.id == id } }
         cancelDailyNotification(taskID: id)
         cancelTaskNotification(taskID: id)
@@ -143,6 +144,7 @@ final class TasksStore: ObservableObject {
 
     func deleteTasks(in pageID: UUID, ids: Set<UUID>) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        ids.forEach { trackTaskDeletion($0) }
         withAnimation { pages[i].tasks.removeAll { ids.contains($0.id) } }
         ids.forEach { cancelDailyNotification(taskID: $0); cancelTaskNotification(taskID: $0) }
     }
@@ -605,7 +607,7 @@ final class TasksStore: ObservableObject {
         return unusedCount
     }
 
-    // MARK: - مزامنة iCloud
+    // MARK: - مزامنة iCloud مع Merge + Tombstone
 
     /// مزامنة مؤجلة — تنتظر 2 ثانية بعد آخر تغيير قبل الرفع
     private func syncToCloudDebounced() {
@@ -614,19 +616,180 @@ final class TasksStore: ObservableObject {
         syncTask = Task {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
-            await cloudKit.upload(pages: pages)
+            await syncNow()
         }
     }
 
-    /// مزامنة فورية — رفع البيانات الآن
-    func syncNow() async {
-        await cloudKit.upload(pages: pages)
+    /// تتبع حذف مهمة (Tombstone)
+    func trackTaskDeletion(_ id: UUID) {
+        cloudKit.trackDeletion(id)
     }
 
-    /// تحميل البيانات من iCloud واستبدال المحلية
-    func pullFromCloud() async -> Bool {
-        guard let cloudPages = await cloudKit.download() else { return false }
-        self.pages = cloudPages
-        return true
+    /// مزامنة فورية مع دمج (Merge)
+    func syncNow() async {
+        guard cloudKit.iCloudAvailable && cloudKit.syncEnabled else { return }
+
+        // 1. توليد JSON محلي مع deletedIds
+        let localBackup = generateSyncJSON()
+
+        // 2. جلب البيانات من iCloud
+        guard let remoteData = await cloudKit.download() else {
+            // لا يوجد بيانات سحابية — ارفع المحلي فقط
+            await cloudKit.upload(data: localBackup)
+            return
+        }
+
+        // 3. دمج البيانات
+        let merged = mergeData(local: localBackup, remote: remoteData)
+
+        // 4. رفع النتيجة المدمجة
+        await cloudKit.upload(data: merged)
+
+        // 5. تطبيق المدمج محلياً (بدون trigger didSet)
+        applyMergedPages(from: merged)
     }
+
+    /// استعادة تلقائية بعد إعادة تثبيت التطبيق
+    func tryAutoRestore() async {
+        // إذا فيه بيانات محلية حقيقية (مو default) لا تستعيد
+        let hasRealData = pages.contains { page in
+            page.tasks.contains { !$0.title.isEmpty }
+        }
+        let isDefault = pages.count == 3
+            && pages[0].isDaily && pages[0].tasks.isEmpty
+            && pages[1].name == "عام" && pages[1].tasks.count == 1
+            && pages[2].name == "خاص" && pages[2].tasks.count == 2
+        guard !hasRealData || isDefault else { return }
+
+        guard cloudKit.iCloudAvailable else { return }
+        guard let remoteData = await cloudKit.download() else { return }
+
+        applyMergedPages(from: remoteData)
+    }
+
+    /// معالجة تغييرات من جهاز آخر (push notification)
+    func handleRemoteSync() async {
+        guard cloudKit.iCloudAvailable && cloudKit.syncEnabled else { return }
+        await syncNow()
+    }
+
+    // MARK: - توليد JSON للمزامنة
+
+    private func generateSyncJSON() -> Data {
+        let backup = SyncBackup(
+            version: "1.0",
+            syncDate: Date(),
+            pages: pages,
+            deletedIds: Array(cloudKit.deletedTaskIds)
+        )
+        return (try? JSONEncoder().encode(backup)) ?? Data()
+    }
+
+    // MARK: - دمج البيانات بالـ ID
+
+    private func mergeData(local: Data, remote: Data) -> Data {
+        guard let localBackup = try? JSONDecoder().decode(SyncBackup.self, from: local),
+              let remoteBackup = try? JSONDecoder().decode(SyncBackup.self, from: remote) else {
+            return local // فشل فك التشفير — أرجع المحلي
+        }
+
+        // جمع كل الـ deletedIds
+        let allDeletedIds: Set<String> = Set(localBackup.deletedIds)
+            .union(Set(remoteBackup.deletedIds))
+            .union(cloudKit.deletedTaskIds)
+
+        // تحديث الـ tombstones المحلية
+        for id in allDeletedIds {
+            if let uuid = UUID(uuidString: id) {
+                cloudKit.trackDeletion(uuid)
+            }
+        }
+
+        // دمج الصفحات بالـ ID
+        var mergedPagesMap: [UUID: TaskPage] = [:]
+        var pageOrder: [UUID] = []
+
+        for page in localBackup.pages {
+            mergedPagesMap[page.id] = page
+            pageOrder.append(page.id)
+        }
+
+        for page in remoteBackup.pages {
+            if var existingPage = mergedPagesMap[page.id] {
+                // الصفحة موجودة — ادمج المهام
+                existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
+                mergedPagesMap[page.id] = existingPage
+            } else {
+                // صفحة جديدة من الجهاز الآخر
+                var newPage = page
+                newPage.tasks = page.tasks.filter { !allDeletedIds.contains($0.id.uuidString) }
+                mergedPagesMap[page.id] = newPage
+                pageOrder.append(page.id)
+            }
+        }
+
+        // فلترة المهام المحذوفة من كل الصفحات
+        var mergedPages = pageOrder.compactMap { mergedPagesMap[$0] }
+        for i in mergedPages.indices {
+            mergedPages[i].tasks = mergedPages[i].tasks.filter { !allDeletedIds.contains($0.id.uuidString) }
+        }
+
+        let merged = SyncBackup(
+            version: "1.0",
+            syncDate: Date(),
+            pages: mergedPages,
+            deletedIds: Array(allDeletedIds)
+        )
+
+        return (try? JSONEncoder().encode(merged)) ?? local
+    }
+
+    private func mergeTasksById(_ local: [TaskItem], _ remote: [TaskItem], deletedIds: Set<String>) -> [TaskItem] {
+        var merged: [UUID: TaskItem] = [:]
+        var order: [UUID] = []
+
+        for task in local {
+            if !deletedIds.contains(task.id.uuidString) {
+                merged[task.id] = task
+                order.append(task.id)
+            }
+        }
+
+        for task in remote {
+            if deletedIds.contains(task.id.uuidString) { continue }
+            if let existing = merged[task.id] {
+                // احتفظ بالأحدث (بناء على createdAt أو أي تغيير)
+                if task.createdAt > existing.createdAt || task.isDone != existing.isDone {
+                    // إذا المهمة البعيدة أحدث أو حالتها تغيرت
+                    if task.createdAt > existing.createdAt {
+                        merged[task.id] = task
+                    }
+                }
+            } else {
+                merged[task.id] = task
+                order.append(task.id)
+            }
+        }
+
+        return order.compactMap { merged[$0] }
+    }
+
+    // MARK: - تطبيق البيانات المدمجة
+
+    private func applyMergedPages(from data: Data) {
+        guard let backup = try? JSONDecoder().decode(SyncBackup.self, from: data) else { return }
+        guard !backup.pages.isEmpty else { return }
+        // تعيين مباشر بدون trigger didSet (يمنع save + sync loop)
+        _pages = Published(wrappedValue: backup.pages)
+        save()
+    }
+}
+
+// MARK: - نموذج بيانات المزامنة
+
+struct SyncBackup: Codable {
+    let version: String
+    let syncDate: Date
+    let pages: [TaskPage]
+    let deletedIds: [String]
 }

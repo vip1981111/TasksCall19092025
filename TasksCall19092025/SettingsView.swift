@@ -286,8 +286,8 @@ struct SettingsView: View {
 
                 Button {
                     Task {
-                        let success = await store.pullFromCloud()
-                        syncAlertMessage = success ? "تم تحميل البيانات من iCloud" : "لا توجد بيانات في iCloud بعد"
+                        await store.syncNow()
+                        syncAlertMessage = "تم تحميل ودمج البيانات من iCloud"
                         showSyncAlert = true
                     }
                 } label: {
