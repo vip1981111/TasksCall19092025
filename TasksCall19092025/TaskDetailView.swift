@@ -690,25 +690,23 @@ struct TaskDetailView: View {
             if task.steps.isEmpty {
                 Text("لا توجد خطوات").foregroundStyle(.secondary).font(.subheadline)
             } else {
-                ForEach(task.steps.indices, id: \.self) { index in
+                ForEach(task.steps) { step in
                     HStack {
                         Button {
-                            task.steps[index].isDone.toggle()
-                            if task.steps[index].isDone {
-                                task.steps[index].completedAt = Date()
-                            } else {
-                                task.steps[index].completedAt = nil
+                            if let idx = task.steps.firstIndex(where: { $0.id == step.id }) {
+                                task.steps[idx].isDone.toggle()
+                                task.steps[idx].completedAt = task.steps[idx].isDone ? Date() : nil
                             }
                         } label: {
-                            Image(systemName: task.steps[index].isDone ? "checkmark.circle.fill" : "circle")
+                            Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(task.priority.color)
                         }
                         .buttonStyle(.plain)
-                        Text(task.steps[index].title)
-                            .strikethrough(task.steps[index].isDone, color: .secondary)
-                            .foregroundStyle(task.steps[index].isDone ? .secondary : .primary)
+                        Text(step.title)
+                            .strikethrough(step.isDone, color: .secondary)
+                            .foregroundStyle(step.isDone ? .secondary : .primary)
                         Spacer()
-                        if let completedAt = task.steps[index].completedAt {
+                        if let completedAt = step.completedAt {
                             Text(shortDate(completedAt))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -719,7 +717,7 @@ struct TaskDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            task.steps.remove(at: index)
+                            task.steps.removeAll { $0.id == step.id }
                         } label: {
                             Label("حذف", systemImage: "trash")
                         }

@@ -62,9 +62,9 @@ final class TasksStore: ObservableObject {
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
-            self.pages = decoded.isEmpty ? Self.defaultPages() : decoded
+            _pages = Published(wrappedValue: decoded.isEmpty ? Self.defaultPages() : decoded)
         } catch {
-            self.pages = Self.defaultPages()
+            _pages = Published(wrappedValue: Self.defaultPages())
             save()
         }
     }
@@ -544,6 +544,9 @@ final class TasksStore: ObservableObject {
             return (0, 0)
         }
 
+        // الامتدادات المسموح حذفها فقط (ملفات مرفقات)
+        let attachmentExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "m4a", "mp3", "wav", "aac", "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "rtf"]
+
         var deletedCount = 0
         var freedSpace: Int64 = 0
 
@@ -551,6 +554,9 @@ final class TasksStore: ObservableObject {
             if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, isDirectory { continue }
             let fileName = fileURL.lastPathComponent
             if fileName == "tasks_pages.json" { continue }
+            // تجاهل الملفات التي ليست بامتدادات مرفقات معروفة
+            let ext = fileURL.pathExtension.lowercased()
+            if !attachmentExtensions.contains(ext) { continue }
             if !usedFileNames.contains(fileName) {
                 if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     freedSpace += Int64(fileSize)

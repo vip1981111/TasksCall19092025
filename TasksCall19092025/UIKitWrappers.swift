@@ -43,8 +43,22 @@ struct DocumentsBrowserView: UIViewControllerRepresentable {
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
             let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            onPick(url)
+            // نسخ الملف إلى Documents قبل إغلاق security scope
+            let fm = FileManager.default
+            guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                return
+            }
+            let destURL = docs.appendingPathComponent(url.lastPathComponent)
+            do {
+                if fm.fileExists(atPath: destURL.path) { try fm.removeItem(at: destURL) }
+                try fm.copyItem(at: url, to: destURL)
+            } catch {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                return
+            }
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            onPick(destURL)
         }
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {}
     }
