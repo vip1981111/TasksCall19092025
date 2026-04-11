@@ -35,6 +35,9 @@ struct SettingsView: View {
     @State private var showCleanupResult: Bool = false
     @State private var cleanupResultMessage: String = ""
     @State private var unusedAttachmentsCount: Int = 0
+    @State private var showTrialAdAlert: Bool = false
+    @State private var trialAdMessage: String = ""
+    @State private var waitingForAdToShow: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -56,6 +59,15 @@ struct SettingsView: View {
             .onAppear {
                 updateUnusedAttachmentsCount()
                 themeManager.validateTheme(isPremium: subscriptionManager.isPremium)
+                // تحميل إعلان المكافأة مسبقاً لزر التجربة
+                if !rewardedAd.isAdReady {
+                    rewardedAd.loadAd()
+                }
+            }
+            .alert("التجربة المجانية", isPresented: $showTrialAdAlert) {
+                Button("حسنًا", role: .cancel) { }
+            } message: {
+                Text(trialAdMessage)
             }
             .sheet(item: $shareItem) { item in
                 ShareLink(item: item.url) { Label("مشاركة الملف", systemImage: "square.and.arrow.up") }
@@ -383,22 +395,46 @@ struct SettingsView: View {
 
     private var premiumSection: some View {
         Section {
-            if subscriptionManager.isPremium {
+            if subscriptionManager.isPremium && !TrialService.shared.isTrialActive {
+                // مشترك فعلي (ليس تجربة)
                 HStack {
                     Image(systemName: "crown.fill").foregroundStyle(.orange)
-                    if subscriptionManager.isTrialPremiumActive {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("تجربة أنجز PRO مفعّلة").fontWeight(.medium)
-                            if let remaining = subscriptionManager.trialRemainingText {
-                                Text(remaining)
-                                    .font(.caption).foregroundStyle(.orange)
-                            }
+                    Text("أنت مشترك في أنجز PRO").fontWeight(.medium)
+                    Spacer()
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                }
+            } else if TrialService.shared.isTrialActive {
+                // تجربة 7 أيام نشطة — يظهر حالة التجربة + زر الاشتراك
+                HStack {
+                    Image(systemName: "crown.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("تجربة أنجز PRO مفعّلة").fontWeight(.medium)
+                        if let remaining = TrialService.shared.remainingText {
+                            Text(remaining)
+                                .font(.caption).foregroundStyle(.orange)
                         }
-                    } else {
-                        Text("أنت مشترك في أنجز PRO").fontWeight(.medium)
                     }
                     Spacer()
                     Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                }
+
+                // زر الاشتراك أثناء التجربة
+                Button { showPaywall = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "star.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.purple)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("اشترك الآن واحتفظ بـ PRO للأبد")
+                                .font(.subheadline).fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                            Text("لا تنتظر انتهاء التجربة")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.left").foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
             } else {
                 Button { showPaywall = true } label: {
@@ -419,27 +455,81 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
 
-                // زر تجربة PRO بمشاهدة إعلان
+                // زر تجربة PRO 7 أيام بمشاهدة إعلان
                 #if !targetEnvironment(macCatalyst)
-                Button {
-                    rewardedAd.showAd {
-                        subscriptionManager.activateTrialPremium()
+                if TrialService.shared.canClaimTrial {
+                    Button {
+                        if rewardedAd.isAdReady {
+                            waitingForAdToShow = false
+                            rewardedAd.showAd {
+                                subscriptionManager.activateSevenDayTrial()
+                            }
+                        } else {
+                            // حمّل الإعلان وانتظر — سيُعرض تلقائياً عند الجاهزية
+                            waitingForAdToShow = true
+                            rewardedAd.loadAd()
+                            // مهلة 10 ثوانٍ — لو ما تحمّل أخبر المستخدم
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                                if waitingForAdToShow {
+                                    waitingForAdToShow = false
+                                    trialAdMessage = "تعذر تحميل الإعلان. تأكد من اتصالك بالإنترنت وحاول مرة أخرى."
+                                    showTrialAdAlert = true
+                                    // أعد المحاولة
+                                    rewardedAd.loadAd()
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "gift.fill")
+                                .font(.title2)
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("جرّب PRO مجاناً لمدة 7 أيام")
+                                    .font(.subheadline).fontWeight(.medium)
+                                    .foregroundStyle(.primary)
+                                Text(waitingForAdToShow ? "جارٍ تحميل الإعلان..." : "شاهد إعلان قصير واستمتع بكل المميزات لأسبوع كامل")
+                                    .font(.caption).foregroundStyle(waitingForAdToShow ? .orange : .secondary)
+                            }
+                            Spacer()
+                            if waitingForAdToShow {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else if rewardedAd.isAdReady {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Image(systemName: "play.circle")
+                                    .font(.title2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
-                } label: {
+                    .disabled(waitingForAdToShow)
+                    .onChange(of: rewardedAd.isAdReady) { _, isReady in
+                        if isReady && waitingForAdToShow {
+                            waitingForAdToShow = false
+                            rewardedAd.showAd {
+                                subscriptionManager.activateSevenDayTrial()
+                            }
+                        }
+                    }
+                } else if TrialService.shared.trialClaimed {
+                    // التجربة انتهت
                     HStack(spacing: 10) {
-                        Image(systemName: "play.rectangle.fill")
+                        Image(systemName: "clock.badge.xmark")
                             .font(.title3)
-                            .foregroundStyle(.purple)
+                            .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("جرّب PRO مجاناً لمدة 24 ساعة")
+                            Text("انتهت التجربة المجانية")
                                 .font(.subheadline).fontWeight(.medium)
-                                .foregroundStyle(.primary)
-                            Text("شاهد إعلان قصير واستمتع بكل المميزات")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .foregroundStyle(.secondary)
+                            Text("اشترك الآن للاستمتاع بمميزات PRO بدون حدود")
+                                .font(.caption).foregroundStyle(.tertiary)
                         }
                         Spacer()
-                        Image(systemName: "gift.fill")
-                            .foregroundStyle(.purple)
                     }
                     .padding(.vertical, 4)
                 }
@@ -458,8 +548,24 @@ struct SettingsView: View {
                 Text(appVersion).foregroundStyle(.secondary)
             }
             Link("سياسة الخصوصية", destination: URL(string: "https://vip1981111.github.io/anjaz-support/privacy.html")!)
-            Text("البيانات تحفظ محليًا على جهازك. لا توجد خوادم.")
-                .font(.footnote).foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("التخزين المحلي", systemImage: "internaldrive.fill")
+                    .font(.footnote).fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                Text("جميع بياناتك تُحفظ على جهازك مباشرة في مجلد التطبيق (Documents). لا توجد خوادم خارجية.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("المزامنة عبر iCloud", systemImage: "icloud.fill")
+                    .font(.footnote).fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                Text("عند تفعيل المزامنة، تُرسل بياناتك إلى iCloud الخاص بحساب Apple ID الخاص بك فقط. لا أحد غيرك يملك الوصول إليها.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
         }
     }
 

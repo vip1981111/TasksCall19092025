@@ -117,10 +117,8 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
             loadAd()
             return
         }
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootVC = windowScene.windows.first?.rootViewController {
-            ad.present(fromRootViewController: rootVC)
-        }
+        guard let topVC = RewardedAdManager.topViewController() else { return }
+        ad.present(fromRootViewController: topVC)
     }
 
     // MARK: - GADFullScreenContentDelegate
@@ -152,13 +150,16 @@ final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentD
     }
 
     func loadAd() {
+        NSLog("🎬 RewardedAd: بدء تحميل الإعلان...")
         GADRewardedAd.load(withAdUnitID: AdConfig.rewardedAdUnitID, request: GADRequest()) { [weak self] ad, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if error != nil {
+                if let error = error {
+                    NSLog("🎬 RewardedAd: فشل التحميل — \(error.localizedDescription)")
                     self.isAdReady = false
                     return
                 }
+                NSLog("🎬 RewardedAd: ✅ تم التحميل بنجاح")
                 self.rewardedAd = ad
                 self.rewardedAd?.fullScreenContentDelegate = self
                 self.isAdReady = true
@@ -173,15 +174,36 @@ final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentD
             return
         }
         self.onRewardEarned = onReward
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootVC = windowScene.windows.first?.rootViewController {
-            ad.present(fromRootViewController: rootVC) { [weak self] in
-                // المستخدم شاهد الإعلان كاملاً — يستحق المكافأة
-                self?.rewardEarned = true
-                self?.onRewardEarned?()
-                self?.onRewardEarned = nil
-            }
+        guard let topVC = Self.topViewController() else {
+            NSLog("🎬 RewardedAd: ❌ لم يتم العثور على ViewController")
+            return
         }
+        NSLog("🎬 RewardedAd: عرض الإعلان من \(type(of: topVC))")
+        ad.present(fromRootViewController: topVC) { [weak self] in
+            // المستخدم شاهد الإعلان كاملاً — يستحق المكافأة
+            self?.rewardEarned = true
+            self?.onRewardEarned?()
+            self?.onRewardEarned = nil
+        }
+    }
+
+    /// الحصول على أعلى ViewController معروض حالياً (يشمل sheets و modals)
+    static func topViewController(_ base: UIViewController? = nil) -> UIViewController? {
+        let root = base ?? UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first(where: { $0.isKeyWindow })?.rootViewController
+
+        if let nav = root as? UINavigationController {
+            return topViewController(nav.visibleViewController)
+        }
+        if let tab = root as? UITabBarController {
+            return topViewController(tab.selectedViewController)
+        }
+        if let presented = root?.presentedViewController {
+            return topViewController(presented)
+        }
+        return root
     }
 
     // MARK: - GADFullScreenContentDelegate

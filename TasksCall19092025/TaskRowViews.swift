@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 // MARK: - Task Row Container
 
@@ -17,12 +18,31 @@ struct TaskRowContainer: View {
     var onToggleDaily: (Bool) -> Void
     var onMoveToPage: (UUID) -> Void
     @EnvironmentObject private var store: TasksStore
+    @EnvironmentObject private var themeManager: ThemeManager
 
     var body: some View {
-        NavigationLink { TaskDetailView(task: $task, onToggleDaily: onToggleDaily) } label: {
-            TaskCardRow(task: $task, pageName: pageName)
+        HStack(spacing: 0) {
+            // ── زر الإنجاز — خارج NavigationLink تماماً ──
+            Button {
+                toggleDone()
+            } label: {
+                Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(task.priority.color)
+                    .font(.system(size: 26))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .padding(.leading, 4)
+
+            // ── NavigationLink يغطي باقي الصف ──
+            NavigationLink {
+                TaskDetailView(task: $task, onToggleDaily: onToggleDaily)
+            } label: {
+                TaskCardRow(task: $task, pageName: pageName)
+            }
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 12))
         .listRowSeparator(.visible)
         .swipeActions(edge: .trailing) {
             if !isDailyPage {
@@ -57,13 +77,19 @@ struct TaskRowContainer: View {
                     }
                 }
             }
-            Button(task.isDone ? "وضع غير منجز" : "وضع منجز") {
-                task.isDone.toggle()
-                if task.isDone {
-                    for i in task.steps.indices {
-                        task.steps[i].isDone = true
-                        task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-                    }
+            Button(task.isDone ? "وضع غير منجز" : "وضع منجز") { toggleDone() }
+        }
+    }
+
+    private func toggleDone() {
+        // إطلاق objectWillChange قبل التعديل يضمن أن SwiftUI يُعيد رسم الصف فوراً
+        store.objectWillChange.send()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            task.isDone.toggle()
+            if task.isDone {
+                for i in task.steps.indices {
+                    task.steps[i].isDone = true
+                    task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
                 }
             }
         }
@@ -71,6 +97,7 @@ struct TaskRowContainer: View {
 }
 
 // MARK: - Task Card Row
+// لم يعد يحتوي على زر الإنجاز — انتقل إلى TaskRowContainer
 
 struct TaskCardRow: View {
     @Binding var task: TaskItem
@@ -86,66 +113,70 @@ struct TaskCardRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Button {
-                    task.isDone.toggle()
-                    if task.isDone {
-                        for i in task.steps.indices {
-                            task.steps[i].isDone = true
-                            task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-                        }
-                    }
-                } label: {
-                    Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(task.priority.color)
-                        .font(.system(size: 22))
-                }.buttonStyle(.plain)
+        HStack(spacing: 0) {
+            // المحتوى الرئيسي
+            VStack(alignment: .leading, spacing: 6) {
+                // العنوان — يتسع بلا حد، محاذاة يسار
+                Text(task.title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .strikethrough(task.isDone, color: .secondary)
+                    .foregroundStyle(task.isDone ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
+                // التاريخ + الأيقونات — محاذاة يسار
                 HStack(spacing: 6) {
-                    Text(task.title).lineLimit(2).multilineTextAlignment(.trailing)
-                        .strikethrough(task.isDone, color: .secondary)
-                        .foregroundStyle(task.isDone ? .secondary : .primary)
+                    Text(createdAtString(task.createdAt)).font(.caption2).foregroundStyle(.secondary)
+                    if let page = pageName, !page.isEmpty { Text("• \(page)").font(.caption2).foregroundStyle(.secondary) }
+
+                    // الأيقونات بعد التاريخ
                     if task.isInDaily { Image(systemName: "sun.max.fill").foregroundStyle(.yellow).imageScale(.small) }
                     if hasAttachments { Image(systemName: "paperclip").foregroundStyle(.secondary).imageScale(.small) }
                     if hasNotes { Image(systemName: "square.and.pencil").foregroundStyle(.secondary).imageScale(.small) }
-                    if task.dueDate != nil { Image(systemName: "bell.badge.fill").foregroundStyle(themeManager.currentTheme.accentColor).imageScale(.small) }
-                    if task.recurrence != .none { Image(systemName: "repeat.circle.fill").foregroundStyle(themeManager.currentTheme.highlightColor).imageScale(.small) }
+                    if task.dueDate != nil { Image(systemName: "bell.badge.fill").foregroundStyle(task.priority.color).imageScale(.small) }
+                    if task.recurrence != .none { Image(systemName: "repeat.circle.fill").foregroundStyle(task.priority.color).imageScale(.small) }
+
+                    Spacer()
                 }
 
-                Spacer(minLength: 6)
-
-                Text(task.priority.title)
-                    .font(.caption.bold())
-                    .foregroundStyle(task.priority == .medium ? Color.black : Color.white)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(task.priority.color).clipShape(Capsule()).fixedSize()
-            }
-
-            HStack(spacing: 6) {
-                Text(createdAtString(task.createdAt)).font(.caption2).foregroundStyle(.secondary)
-                if let page = pageName, !page.isEmpty { Text("• \(page)").font(.caption2).foregroundStyle(.secondary) }
-                Spacer()
-            }
-
-            if !task.steps.isEmpty {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 6)
-                    GeometryReader { geo in
-                        Capsule().fill(task.priority.color)
-                            .frame(width: max(6, geo.size.width * stepsProgress), height: 6)
-                            .animation(.easeInOut(duration: 0.25), value: stepsProgress)
-                    }.frame(height: 6)
+                // شريط تقدم الخطوات
+                if !task.steps.isEmpty {
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 5)
+                        GeometryReader { geo in
+                            Capsule().fill(task.priority.color)
+                                .frame(width: max(5, geo.size.width * stepsProgress), height: 5)
+                                .animation(.easeInOut(duration: 0.25), value: stepsProgress)
+                        }.frame(height: 5)
+                    }
                 }
             }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 10)
+
+            // الأولوية — نص عامودي على الطرف
+            Text(task.priority.title)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .rotationEffect(.degrees(-90))
+                .fixedSize()
+                .frame(width: 22)
+                .frame(maxHeight: .infinity)
+                .background(task.priority.color)
         }
-        .padding(8)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(themeManager.currentTheme.cardBackground)
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(themeManager.currentTheme.accentColor.opacity(0.15), lineWidth: 0.75))
-                .shadow(color: .black.opacity(0.04), radius: 4, x: 0, y: 1)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(task.priority.color.opacity(0.3), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: .black.opacity(0.04), radius: 4, x: 0, y: 1)
         .contentShape(Rectangle())
     }
 

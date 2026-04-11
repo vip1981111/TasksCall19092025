@@ -53,13 +53,12 @@ final class SubscriptionManager: ObservableObject {
     @Published var errorMessage: String? = nil
 
     var isPremium: Bool {
-        !purchasedProductIDs.isEmpty || isTrialPremiumActive
+        !purchasedProductIDs.isEmpty || TrialService.shared.isTrialActive
     }
 
-    /// هل المستخدم في فترة تجربة PRO مؤقتة (من إعلان المكافأة)
-    var isTrialPremiumActive: Bool {
-        guard let until = trialPremiumUntil else { return false }
-        return Date() < until
+    /// هل المستخدم في فترة تجربة PRO 7 أيام
+    var isSevenDayTrialActive: Bool {
+        TrialService.shared.isTrialActive
     }
 
     /// هل الإعلانات مخفية مؤقتاً (من إعلان المكافأة)
@@ -78,17 +77,7 @@ final class SubscriptionManager: ObservableObject {
         return "متبقي \(minutes) دقيقة"
     }
 
-    /// الوقت المتبقي لتجربة PRO (نص مقروء)
-    var trialRemainingText: String? {
-        guard let until = trialPremiumUntil, Date() < until else { return nil }
-        let remaining = until.timeIntervalSince(Date())
-        let hours = Int(remaining) / 3600
-        let minutes = (Int(remaining) % 3600) / 60
-        if hours > 0 { return "متبقي \(hours) ساعة و\(minutes) دقيقة" }
-        return "متبقي \(minutes) دقيقة"
-    }
-
-    // MARK: - تخزين أوقات المكافآت
+    // MARK: - تخزين وقت إخفاء الإعلانات
     @Published var adFreeUntil: Date? {
         didSet {
             if let date = adFreeUntil {
@@ -99,24 +88,15 @@ final class SubscriptionManager: ObservableObject {
         }
     }
 
-    @Published var trialPremiumUntil: Date? {
-        didSet {
-            if let date = trialPremiumUntil {
-                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "trialPremiumUntil")
-            } else {
-                UserDefaults.standard.removeObject(forKey: "trialPremiumUntil")
-            }
-        }
-    }
-
     /// تفعيل إخفاء الإعلانات لمدة ساعتين
     func activateAdFreeReward() {
         adFreeUntil = Date().addingTimeInterval(2 * 60 * 60) // ساعتين
     }
 
-    /// تفعيل تجربة PRO لمدة 24 ساعة
-    func activateTrialPremium() {
-        trialPremiumUntil = Date().addingTimeInterval(24 * 60 * 60) // 24 ساعة
+    /// تفعيل تجربة PRO لمدة 7 أيام (آمنة — Keychain)
+    func activateSevenDayTrial() {
+        TrialService.shared.claimTrial()
+        objectWillChange.send()
     }
 
     var monthlyProduct: Product? {
@@ -132,12 +112,9 @@ final class SubscriptionManager: ObservableObject {
     private var transactionListener: Task<Void, Never>?
 
     init() {
-        // تحميل أوقات المكافآت المحفوظة
+        // تحميل وقت إخفاء الإعلانات المحفوظ
         if let ts = UserDefaults.standard.object(forKey: "adFreeUntil") as? Double {
             self.adFreeUntil = Date(timeIntervalSince1970: ts)
-        }
-        if let ts = UserDefaults.standard.object(forKey: "trialPremiumUntil") as? Double {
-            self.trialPremiumUntil = Date(timeIntervalSince1970: ts)
         }
 
         transactionListener = listenForTransactions()
@@ -320,7 +297,6 @@ struct PaywallView: View {
                 }
             }
             .task {
-                // لو المنتجات ما تحملت — حاول تحميلها عند فتح صفحة الاشتراك
                 if subscriptionManager.products.isEmpty {
                     await subscriptionManager.loadProducts()
                 }

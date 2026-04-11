@@ -71,6 +71,8 @@ struct TasksCall19092025App: App {
                 .forceRTL()
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
+                        // إزالة المهام اليومية المنتهية (24 ساعة) تلقائياً
+                        store.checkAndRemoveExpiredDailyTasks()
                         // Auto-sync عند فتح التطبيق
                         if store.cloudKit.syncEnabled {
                             Task { await store.syncNow() }

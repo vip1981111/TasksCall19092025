@@ -12,7 +12,9 @@ import ZIPFoundation
 
 @MainActor
 final class TasksStore: ObservableObject {
-    @Published var pages: [TaskPage] = [] { didSet { save(); syncToCloudDebounced() } }
+    // flag لمنع sync loop عند تطبيق بيانات iCloud
+    private var isApplyingRemoteSync = false
+    @Published var pages: [TaskPage] = [] { didSet { save(); if !isApplyingRemoteSync { syncToCloudDebounced() } } }
     @Published var notificationsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
@@ -59,14 +61,16 @@ final class TasksStore: ObservableObject {
     // MARK: - تحميل وحفظ البيانات
 
     func load() {
+        isApplyingRemoteSync = true
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
-            _pages = Published(wrappedValue: decoded.isEmpty ? Self.defaultPages() : decoded)
+            pages = decoded.isEmpty ? Self.defaultPages() : decoded
         } catch {
-            _pages = Published(wrappedValue: Self.defaultPages())
+            pages = Self.defaultPages()
             save()
         }
+        isApplyingRemoteSync = false
     }
 
     func save() {
@@ -78,6 +82,12 @@ final class TasksStore: ObservableObject {
             NSLog("⚠️ فشل حفظ البيانات: \(error.localizedDescription)")
             #endif
         }
+    }
+
+    /// حفظ فوري — يُستدعى من TaskDetailView عند أي تغيير
+    /// ملاحظة: لا نستدعي syncToCloudDebounced هنا لأن didSet على pages يتكفل بها
+    func forceSave() {
+        save()
     }
 
     static func defaultPages() -> [TaskPage] {
@@ -123,8 +133,13 @@ final class TasksStore: ObservableObject {
 
     func deletePage(id: UUID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), !pages[i].isDaily else { return }
+        // إلغاء إشعارات جميع مهام الصفحة قبل حذفها
+        for task in pages[i].tasks {
+            cancelDailyNotification(taskID: task.id)
+            cancelTaskNotification(taskID: task.id)
+        }
         cloudKit.trackPageDeletion(id)
-        let _ = withAnimation { pages.remove(at: i) }
+        withAnimation { pages.remove(at: i) }
     }
 
     // MARK: - إدارة المهام
@@ -202,6 +217,30 @@ final class TasksStore: ObservableObject {
         }
     }
 
+    // MARK: - إزالة المهام اليومية المنتهية تلقائياً بعد 24 ساعة
+
+    /// يُستدعى عند كل فتح للتطبيق — يفحص المهام التي مضى عليها 24 ساعة في اليومي ويُزيلها تلقائياً
+    func checkAndRemoveExpiredDailyTasks() {
+        let threshold: TimeInterval = 24 * 60 * 60
+        let now = Date()
+        var changed = false
+
+        for pIndex in pages.indices where !pages[pIndex].isDaily {
+            for tIndex in pages[pIndex].tasks.indices {
+                let task = pages[pIndex].tasks[tIndex]
+                guard task.isInDaily, let addedAt = task.addedToDailyAt else { continue }
+                if now.timeIntervalSince(addedAt) >= threshold {
+                    pages[pIndex].tasks[tIndex].isInDaily = false
+                    pages[pIndex].tasks[tIndex].addedToDailyAt = nil
+                    cancelDailyNotification(taskID: task.id)
+                    changed = true
+                }
+            }
+        }
+
+        if changed { save() }
+    }
+
     // MARK: - الإشعارات
 
     private func notificationIdentifier(for taskID: UUID) -> String { "daily-\(taskID.uuidString)" }
@@ -219,8 +258,8 @@ final class TasksStore: ObservableObject {
 
     func scheduleDailyReminder(for task: TaskItem) {
         let content = UNMutableNotificationContent()
-        content.title = "متابعة مهمة في اليومي"
-        content.body = "هل لازالت المهمة \"\(task.title)\" بحاجة للبقاء في اليومي؟"
+        content.title = "تمت إزالة مهمة من اليومي"
+        content.body = "انتهت مدة 24 ساعة — تمت إزالة \"\(task.title)\" من اليومي تلقائياً. المهمة لا تزال في صفحتها الأصلية."
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 24*60*60, repeats: false)
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: notificationIdentifier(for: task.id), content: content, trigger: trigger)) { _ in }
@@ -597,11 +636,15 @@ final class TasksStore: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else { return 0 }
 
+        let attachmentExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "m4a", "mp3", "wav", "aac", "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "rtf"]
+
         var unusedCount = 0
         for fileURL in allFiles {
             if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, isDirectory { continue }
             let fileName = fileURL.lastPathComponent
             if fileName == "tasks_pages.json" { continue }
+            let ext = fileURL.pathExtension.lowercased()
+            if !attachmentExtensions.contains(ext) { continue }
             if !usedFileNames.contains(fileName) { unusedCount += 1 }
         }
 
@@ -806,9 +849,11 @@ final class TasksStore: ObservableObject {
     private func applyMergedPages(from data: Data) {
         guard let backup = try? JSONDecoder().decode(SyncBackup.self, from: data) else { return }
         guard !backup.pages.isEmpty else { return }
-        // تعيين مباشر بدون trigger didSet (يمنع save + sync loop)
-        _pages = Published(wrappedValue: backup.pages)
-        save()
+        // نستخدم pages = العادية لضمان إطلاق objectWillChange وتحديث الـ Bindings
+        // isApplyingRemoteSync يمنع الـ sync loop
+        isApplyingRemoteSync = true
+        pages = backup.pages
+        isApplyingRemoteSync = false
     }
 }
 

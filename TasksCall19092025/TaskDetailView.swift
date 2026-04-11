@@ -14,10 +14,12 @@ import VisionKit
 #endif
 
 struct TaskDetailView: View {
-    @Binding var task: TaskItem
+    /// يستخدم taskID + store بدل @Binding لضمان الحفظ الفوري
+    let taskID: UUID
     var onToggleDaily: (Bool) -> Void
-    @EnvironmentObject private var storeEnv: TasksStore
+    @EnvironmentObject private var store: TasksStore
     @EnvironmentObject private var themeManager: ThemeManager
+
     @State private var newStepTitle: String = ""
     @State private var isPhotoPickerPresented: Bool = false
     @State private var isFileImporterPresented: Bool = false
@@ -41,38 +43,56 @@ struct TaskDetailView: View {
     @State private var showDateCalendar: Bool = false
     @State private var selectedReminderDate: Date = Date()
 
-    private var isReminderOnBinding: Binding<Bool> {
-        Binding(
-            get: { task.dueDate != nil },
-            set: { on in
-                if on {
-                    if task.dueDate == nil {
-                        let defaultDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
-                        task.dueDate = defaultDate
-                        selectedReminderDate = defaultDate
-                        showDateCalendar = true
-                    }
-                    storeEnv.scheduleTaskNotification(for: task)
-                } else {
-                    task.dueDate = nil
-                    task.reminderBefore = .none
-                    showDateCalendar = false
-                    storeEnv.scheduleTaskNotification(for: task)
-                }
+    // MARK: - Backward compatibility init
+    /// يدعم الاستدعاء القديم بـ Binding ويأخذ فقط الـ ID
+    init(task: Binding<TaskItem>, onToggleDaily: @escaping (Bool) -> Void) {
+        self.taskID = task.wrappedValue.id
+        self.onToggleDaily = onToggleDaily
+    }
+
+    // MARK: - حساب الموقع في الـ store
+    private var taskLocation: (pageIndex: Int, taskIndex: Int)? {
+        for pIndex in store.pages.indices {
+            if let tIndex = store.pages[pIndex].tasks.firstIndex(where: { $0.id == taskID }) {
+                return (pIndex, tIndex)
             }
-        )
+        }
+        return nil
+    }
+
+    /// الوصول المباشر للمهمة من الـ store
+    private var task: TaskItem {
+        get {
+            if let loc = taskLocation {
+                return store.pages[loc.pageIndex].tasks[loc.taskIndex]
+            }
+            // fallback — لن يحدث عادةً
+            return TaskItem(title: "")
+        }
+    }
+
+    /// تحديث حقل في المهمة مع الحفظ الفوري
+    private func updateTask(_ modify: (inout TaskItem) -> Void) {
+        guard let loc = taskLocation else { return }
+        modify(&store.pages[loc.pageIndex].tasks[loc.taskIndex])
     }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                taskInfoSection
-                Divider()
-                attachmentsSection
-                stepsSection
-                notesSection
+            if taskLocation != nil {
+                VStack(spacing: 16) {
+                    taskInfoSection
+                    Divider()
+                    attachmentsSection
+                    stepsSection
+                    notesSection
+                }
+                .padding(.vertical)
+            } else {
+                Text("المهمة غير موجودة")
+                    .foregroundStyle(.secondary)
+                    .padding()
             }
-            .padding(.vertical)
         }
         .navigationTitle("تفاصيل المهمة")
         .navigationBarTitleDisplayMode(.inline)
@@ -114,8 +134,10 @@ struct TaskDetailView: View {
                     let hasDot = (newNameRaw as NSString).pathExtension.isEmpty == false
                     let finalName = hasDot ? newNameRaw : (currentExt.isEmpty ? newNameRaw : "\(newNameRaw).\(currentExt)")
                     if let newURL = renameAttachmentOnDisk(task.attachments[idx].fileURL, to: finalName) {
-                        task.attachments[idx].fileURL = newURL
-                        task.attachments[idx].fileName = newURL.lastPathComponent
+                        updateTask { t in
+                            t.attachments[idx].fileURL = newURL
+                            t.attachments[idx].fileName = newURL.lastPathComponent
+                        }
                     }
                 }
                 renamingAttachment = nil
@@ -129,13 +151,13 @@ struct TaskDetailView: View {
             }
             Button("إلغاء", role: .cancel) { attachmentPendingDelete = nil }
         } message: {
-            let willDeleteFile = storeEnv.deleteAttachmentFilesOnRemove
+            let willDeleteFile = store.deleteAttachmentFilesOnRemove
             Text(willDeleteFile
                  ? "سيتم حذف المرفق من المهمة وحذف ملفه نهائيًا من التخزين."
                  : "سيتم حذف المرفق من المهمة فقط، وسيبقى الملف محفوظًا في التخزين.")
         }
         .onAppear {
-            storeEnv.requestNotificationAuthorizationIfNeeded()
+            store.requestNotificationAuthorizationIfNeeded()
             loadComponentsFromDueDate()
             if let dueDate = task.dueDate {
                 selectedReminderDate = dueDate
@@ -159,6 +181,7 @@ struct TaskDetailView: View {
             }
             titleField
             reminderDateSection
+            reminderBeforeSectionWrapper
             priorityPicker
             recurrenceSection
             dailyToggle
@@ -177,21 +200,38 @@ struct TaskDetailView: View {
         .padding(.horizontal)
     }
 
+    // MARK: - حقل العنوان
+
+    private var titleField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("العنوان").font(.subheadline).foregroundStyle(.secondary)
+            TextField("عنوان المهمة", text: Binding(
+                get: { task.title },
+                set: { newTitle in
+                    updateTask { t in t.title = newTitle }
+                }
+            ), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...6)
+        }
+    }
+
     // MARK: - قسم التذكير بالتاريخ والوقت
 
     private var reminderDateSection: some View {
         let theme = themeManager.currentTheme
+        let isReminderOn = task.dueDate != nil
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: task.dueDate != nil ? "bell.badge.fill" : "bell.slash")
-                    .foregroundStyle(task.dueDate != nil ? theme.accentColor : theme.secondaryTextColor)
+                Image(systemName: isReminderOn ? "bell.badge.fill" : "bell.slash")
+                    .foregroundStyle(isReminderOn ? theme.accentColor : theme.secondaryTextColor)
                     .font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("التذكير")
                         .font(.subheadline)
                         .fontWeight(.medium)
-                    if let dueDate = task.dueDate {
-                        Text(formattedFullDate(dueDate))
+                    if isReminderOn {
+                        Text(formattedFullDate(task.dueDate!))
                             .font(.caption)
                             .foregroundStyle(theme.accentColor)
                     } else {
@@ -201,13 +241,31 @@ struct TaskDetailView: View {
                     }
                 }
                 Spacer()
-                Toggle("", isOn: isReminderOnBinding)
-                    .labelsHidden()
-                    .tint(theme.accentColor)
+                Toggle("", isOn: Binding(
+                    get: { task.dueDate != nil },
+                    set: { on in
+                        if on {
+                            let defaultDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
+                            updateTask { t in t.dueDate = defaultDate }
+                            selectedReminderDate = defaultDate
+                            showDateCalendar = true
+                            store.scheduleTaskNotification(for: task)
+                        } else {
+                            updateTask { t in
+                                t.dueDate = nil
+                                t.reminderBefore = .none
+                            }
+                            showDateCalendar = false
+                            store.scheduleTaskNotification(for: task)
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .tint(theme.accentColor)
             }
             .padding(.vertical, 4)
 
-            if task.dueDate != nil {
+            if isReminderOn {
                 VStack(spacing: 12) {
                     Button {
                         withAnimation(.easeInOut(duration: 0.3)) {
@@ -246,8 +304,8 @@ struct TaskDetailView: View {
                                            get: { selectedReminderDate },
                                            set: { newDate in
                                                selectedReminderDate = newDate
-                                               task.dueDate = newDate
-                                               storeEnv.scheduleTaskNotification(for: task)
+                                               updateTask { t in t.dueDate = newDate }
+                                               store.scheduleTaskNotification(for: task)
                                            }
                                        ),
                                        in: Date()...,
@@ -256,22 +314,12 @@ struct TaskDetailView: View {
                             .environment(\.locale, Locale(identifier: "ar"))
                             .environment(\.calendar, Calendar(identifier: .gregorian))
                             .tint(theme.accentColor)
-                            .onChange(of: selectedReminderDate) { _, _ in
-                                // إغلاق التقويم تلقائياً بعد اختيار التاريخ
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        showDateCalendar = false
-                                    }
-                                }
-                            }
                         }
                         .padding(8)
                         .background(theme.reminderBackground.opacity(0.5))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
-
-                    reminderBeforeSection
                 }
             }
         }
@@ -279,45 +327,67 @@ struct TaskDetailView: View {
 
     // MARK: - خيار التذكير قبل الموعد
 
+    @ViewBuilder
+    private var reminderBeforeSectionWrapper: some View {
+        if task.dueDate != nil {
+            reminderBeforeSection
+        }
+    }
+
     private var reminderBeforeSection: some View {
         let theme = themeManager.currentTheme
-        return VStack(alignment: .leading, spacing: 6) {
+        let isActive = task.reminderBefore != .none
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: task.reminderBefore.symbol)
-                    .foregroundStyle(task.reminderBefore != .none ? theme.eventDotColor : theme.secondaryTextColor)
+                    .foregroundStyle(isActive ? Color.green : theme.secondaryTextColor)
                     .font(.subheadline)
                 Text("تذكيري قبل الموعد")
                     .font(.subheadline)
                     .fontWeight(.medium)
+                if isActive {
+                    Text("• \(task.reminderBefore.title)")
+                        .font(.caption)
+                        .foregroundStyle(Color.green)
+                        .fontWeight(.medium)
+                }
                 Spacer()
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(ReminderBefore.allCases) { option in
+                        let isSelected = task.reminderBefore == option
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
-                                task.reminderBefore = option
-                                storeEnv.scheduleTaskNotification(for: task)
+                                updateTask { t in t.reminderBefore = option }
                             }
+                            // نقرأ المهمة بعد التحديث مباشرةً من الـ store
+                            store.scheduleTaskNotification(for: task)
                         } label: {
                             Text(option.title)
                                 .font(.caption)
-                                .fontWeight(task.reminderBefore == option ? .bold : .regular)
+                                .fontWeight(isSelected ? .bold : .regular)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
                                 .background(
-                                    task.reminderBefore == option
-                                    ? theme.badgeBackground
-                                    : theme.unselectedChipBackground
+                                    isSelected && option != .none
+                                        ? Color.green
+                                        : (isSelected && option == .none
+                                            ? Color.secondary.opacity(0.18)
+                                            : theme.unselectedChipBackground)
                                 )
                                 .foregroundStyle(
-                                    task.reminderBefore == option ? theme.badgeTextColor : theme.primaryTextColor
+                                    isSelected && option != .none
+                                        ? Color.white
+                                        : theme.primaryTextColor
                                 )
                                 .clipShape(Capsule())
                                 .overlay(
                                     Capsule()
                                         .stroke(
-                                            task.reminderBefore == option ? theme.eventDotColor : Color.clear,
+                                            isSelected && option != .none
+                                                ? Color.green
+                                                : Color.clear,
                                             lineWidth: 1.5
                                         )
                                 )
@@ -331,20 +401,55 @@ struct TaskDetailView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - الأولوية
+
+    private var priorityPicker: some View {
+        HStack {
+            Text("الأولوية").font(.subheadline).foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                ForEach(TaskPriority.allCases) { p in
+                    Button {
+                        updateTask { t in t.priority = p }
+                    } label: {
+                        HStack {
+                            Image(systemName: "circle.fill").foregroundStyle(p.color)
+                            Text(p.title)
+                            if task.priority == p {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Circle().fill(task.priority.color).frame(width: 12, height: 12)
+                    Text(task.priority.title)
+                    Image(systemName: "chevron.down").font(.caption)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
+            }
+        }
+    }
+
     // MARK: - قسم التكرار
 
     private var recurrenceSection: some View {
         let theme = themeManager.currentTheme
+        let isRecurrenceOn = task.recurrence != .none
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: task.recurrence != .none ? "repeat.circle.fill" : "repeat.circle")
-                    .foregroundStyle(task.recurrence != .none ? theme.highlightColor : theme.secondaryTextColor)
+                Image(systemName: isRecurrenceOn ? "repeat.circle.fill" : "repeat.circle")
+                    .foregroundStyle(isRecurrenceOn ? theme.highlightColor : theme.secondaryTextColor)
                     .font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("التكرار")
                         .font(.subheadline)
                         .fontWeight(.medium)
-                    if task.recurrence != .none {
+                    if isRecurrenceOn {
                         Text(task.recurrence.title)
                             .font(.caption)
                             .foregroundStyle(theme.highlightColor)
@@ -360,12 +465,14 @@ struct TaskDetailView: View {
                     set: { isOn in
                         withAnimation(.easeInOut(duration: 0.3)) {
                             if isOn {
-                                task.recurrence = .daily
+                                updateTask { t in t.recurrence = .daily }
                                 updateRecurrenceTime()
                             } else {
-                                task.recurrence = .none
-                                task.recurrenceTime = nil
-                                storeEnv.scheduleTaskNotification(for: task)
+                                updateTask { t in
+                                    t.recurrence = .none
+                                    t.recurrenceTime = nil
+                                }
+                                store.scheduleTaskNotification(for: task)
                             }
                         }
                     }
@@ -375,7 +482,7 @@ struct TaskDetailView: View {
             }
             .padding(.vertical, 4)
 
-            if task.recurrence != .none {
+            if isRecurrenceOn {
                 VStack(spacing: 10) {
                     HStack(spacing: 8) {
                         recurrenceOptionButton(.daily, icon: "sun.max.fill", label: "يومي")
@@ -422,7 +529,7 @@ struct TaskDetailView: View {
         let theme = themeManager.currentTheme
         return Button {
             withAnimation(.easeInOut(duration: 0.2)) {
-                task.recurrence = type
+                updateTask { t in t.recurrence = type }
                 updateRecurrenceTime()
             }
         } label: {
@@ -443,40 +550,38 @@ struct TaskDetailView: View {
         .buttonStyle(.plain)
     }
 
-    private var titleField: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("العنوان").font(.subheadline).foregroundStyle(.secondary)
-            TextField("عنوان المهمة", text: $task.title, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(3...6)
-        }
+    // MARK: - إضافة إلى اليومي
+
+    private var dailyToggle: some View {
+        Toggle(task.isInDaily ? "موجودة في اليومي" : "إضافة إلى اليومي", isOn: Binding(
+            get: { task.isInDaily },
+            set: { newValue in
+                updateTask { t in
+                    t.isInDaily = newValue
+                    t.addedToDailyAt = newValue ? Date() : nil
+                }
+                onToggleDaily(newValue)
+            }
+        ))
     }
 
-    private var priorityPicker: some View {
-        HStack {
-            Text("الأولوية").font(.subheadline).foregroundStyle(.secondary)
-            Spacer()
-            Menu {
-                Picker("الأولوية", selection: $task.priority) {
-                    ForEach(TaskPriority.allCases) { p in
-                        HStack {
-                            Image(systemName: "circle.fill").foregroundStyle(p.color)
-                            Text(p.title)
-                        }.tag(p)
+    // MARK: - منجزة
+
+    private var completionToggle: some View {
+        Toggle("منجزة", isOn: Binding(
+            get: { task.isDone },
+            set: { newValue in
+                updateTask { t in
+                    t.isDone = newValue
+                    if newValue {
+                        for i in t.steps.indices {
+                            t.steps[i].isDone = true
+                            t.steps[i].completedAt = t.steps[i].completedAt ?? Date()
+                        }
                     }
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Circle().fill(task.priority.color).frame(width: 12, height: 12)
-                    Text(task.priority.title)
-                    Image(systemName: "chevron.down").font(.caption)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(Capsule())
             }
-        }
+        ))
     }
 
     // MARK: - دوال التنسيق للتاريخ والوقت
@@ -510,29 +615,31 @@ struct TaskDetailView: View {
         let calendar = Calendar.current
         let components = calendar.dateComponents([.hour, .minute], from: reminderTime)
 
+        var newRecurrenceTime: Date?
         switch task.recurrence {
         case .none:
-            task.recurrenceTime = nil
+            newRecurrenceTime = nil
         case .daily:
             var dateComps = calendar.dateComponents([.year, .month, .day], from: Date())
             dateComps.hour = components.hour
             dateComps.minute = components.minute
-            task.recurrenceTime = calendar.date(from: dateComps)
+            newRecurrenceTime = calendar.date(from: dateComps)
         case .weekly:
             var dateComps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
             dateComps.weekday = selectedWeekday
             dateComps.hour = components.hour
             dateComps.minute = components.minute
-            task.recurrenceTime = calendar.date(from: dateComps)
+            newRecurrenceTime = calendar.date(from: dateComps)
         case .monthly:
             var dateComps = calendar.dateComponents([.year, .month], from: Date())
             dateComps.day = selectedMonthDay
             dateComps.hour = components.hour
             dateComps.minute = components.minute
-            task.recurrenceTime = calendar.date(from: dateComps)
+            newRecurrenceTime = calendar.date(from: dateComps)
         }
 
-        storeEnv.scheduleTaskNotification(for: task)
+        updateTask { t in t.recurrenceTime = newRecurrenceTime }
+        store.scheduleTaskNotification(for: task)
     }
 
     private func loadComponentsFromDueDate() {
@@ -549,25 +656,6 @@ struct TaskDetailView: View {
             if let weekday = components.weekday { selectedWeekday = weekday }
             if let day = components.day { selectedMonthDay = min(max(day, 1), 31) }
         }
-    }
-
-    private var dailyToggle: some View {
-        Toggle(task.isInDaily ? "موجودة في اليومي" : "إضافة إلى اليومي", isOn: Binding(
-            get: { task.isInDaily },
-            set: { onToggleDaily($0) }
-        ))
-    }
-
-    private var completionToggle: some View {
-        Toggle("منجزة", isOn: $task.isDone)
-            .onChange(of: task.isDone) { _, newValue in
-                if newValue {
-                    for i in task.steps.indices {
-                        task.steps[i].isDone = true
-                        task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
-                    }
-                }
-            }
     }
 
     // MARK: - Attachments Section
@@ -637,7 +725,9 @@ struct TaskDetailView: View {
                 try data.write(to: destURL, options: .atomic)
             }
             let kind = kindForFileExtension(destURL.pathExtension)
-            task.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
+            updateTask { t in
+                t.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
+            }
         } catch {
             #if DEBUG
             NSLog("⚠️ فشل إضافة مرفق: \(error.localizedDescription)")
@@ -655,7 +745,9 @@ struct TaskDetailView: View {
         let url = docs.appendingPathComponent(uniqueName)
         do {
             try data.write(to: url, options: .atomic)
-            task.attachments.append(TaskAttachment(fileName: uniqueName, fileURL: url, kind: .image))
+            updateTask { t in
+                t.attachments.append(TaskAttachment(fileName: uniqueName, fileURL: url, kind: .image))
+            }
         } catch {
             #if DEBUG
             NSLog("⚠️ فشل حفظ صورة: \(error.localizedDescription)")
@@ -671,10 +763,7 @@ struct TaskDetailView: View {
                 Label("الخطوات", systemImage: "list.bullet").font(.headline)
                 Spacer()
                 Button {
-                    let title = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !title.isEmpty else { return }
-                    task.steps.append(TaskStep(title: title))
-                    newStepTitle = ""
+                    addStep()
                 } label: { Label("إضافة", systemImage: "plus.circle.fill") }
                 .disabled(newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -682,10 +771,7 @@ struct TaskDetailView: View {
                 .textFieldStyle(.roundedBorder)
                 .submitLabel(.done)
                 .onSubmit {
-                    let title = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !title.isEmpty else { return }
-                    task.steps.append(TaskStep(title: title))
-                    newStepTitle = ""
+                    addStep()
                 }
             if task.steps.isEmpty {
                 Text("لا توجد خطوات").foregroundStyle(.secondary).font(.subheadline)
@@ -694,8 +780,10 @@ struct TaskDetailView: View {
                     HStack {
                         Button {
                             if let idx = task.steps.firstIndex(where: { $0.id == step.id }) {
-                                task.steps[idx].isDone.toggle()
-                                task.steps[idx].completedAt = task.steps[idx].isDone ? Date() : nil
+                                updateTask { t in
+                                    t.steps[idx].isDone.toggle()
+                                    t.steps[idx].completedAt = t.steps[idx].isDone ? Date() : nil
+                                }
                             }
                         } label: {
                             Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
@@ -717,7 +805,9 @@ struct TaskDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            task.steps.removeAll { $0.id == step.id }
+                            updateTask { t in
+                                t.steps.removeAll { $0.id == step.id }
+                            }
                         } label: {
                             Label("حذف", systemImage: "trash")
                         }
@@ -728,12 +818,26 @@ struct TaskDetailView: View {
         .padding(.horizontal)
     }
 
+    private func addStep() {
+        let title = newStepTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        updateTask { t in
+            t.steps.append(TaskStep(title: title))
+        }
+        newStepTitle = ""
+    }
+
     // MARK: - Notes Section
 
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("ملاحظات", systemImage: "square.and.pencil").font(.headline)
-            TextEditor(text: $task.notes)
+            TextEditor(text: Binding(
+                get: { task.notes },
+                set: { newNotes in
+                    updateTask { t in t.notes = newNotes }
+                }
+            ))
                 .frame(minHeight: 100)
                 .padding(8)
                 .background(Color.secondary.opacity(0.06))
@@ -753,8 +857,10 @@ struct TaskDetailView: View {
     }
 
     private func removeAttachment(_ att: TaskAttachment) {
-        task.attachments.removeAll { $0.id == att.id }
-        if storeEnv.deleteAttachmentFilesOnRemove { storeEnv.removeAttachmentFile(at: att.fileURL) }
+        updateTask { t in
+            t.attachments.removeAll { $0.id == att.id }
+        }
+        if store.deleteAttachmentFilesOnRemove { store.removeAttachmentFile(at: att.fileURL) }
     }
 
     private func kindForFileExtension(_ ext: String) -> AttachmentKind {

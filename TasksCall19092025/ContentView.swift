@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var showAddDuplicateAlert: Bool = false
     @State private var showRenameDuplicateAlert: Bool = false
     @State private var showAddTaskSheet: Bool = false
+    @State private var pageToDelete: TaskPage? = nil
 
     private var currentPage: TaskPage? {
         guard let id = selectedPageID else { return store.pages.first(where: { $0.isDaily }) ?? store.pages.first }
@@ -40,7 +41,14 @@ struct ContentView: View {
         return idx
     }
 
-    private var precomputedFilteredIDs: [UUID] {
+    // يحمل الـ ID + stateHash لإجبار SwiftUI على إعادة رسم الصف عند تغيير isDone أو priority
+    private struct TaskRowID: Hashable {
+        let id: UUID
+        let isDone: Bool
+        let priority: TaskPriority
+    }
+
+    private var precomputedFilteredIDs: [TaskRowID] {
         var items: [(id: UUID, task: TaskItem)] = []
         func appendFromPage(_ page: TaskPage) { for t in page.tasks { items.append((t.id, t)) } }
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -68,7 +76,7 @@ struct ContentView: View {
                 return a.task.title.localizedCaseInsensitiveCompare(b.task.title) == .orderedAscending
             }
         }
-        return items.map { $0.id }
+        return items.map { TaskRowID(id: $0.id, isDone: $0.task.isDone, priority: $0.task.priority) }
     }
 
     private func bindingForTask(id: UUID) -> Binding<TaskItem>? {
@@ -118,23 +126,23 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         List {
-                            ForEach(precomputedFilteredIDs, id: \.self) { tid in
-                                if let $task = bindingForTask(id: tid) {
+                            ForEach(precomputedFilteredIDs, id: \.self) { rowID in
+                                if let $task = bindingForTask(id: rowID.id) {
                                     TaskRowContainer(
                                         task: $task,
-                                        pageName: pageNameForTaskInContextFromID(tid),
+                                        pageName: pageNameForTaskInContextFromID(rowID.id),
                                         isDailyPage: currentPage?.isDaily == true,
                                         onDelete: {
-                                            if let pageID = pageIDForTask(tid) {
-                                                store.deleteTask(in: pageID, id: tid)
+                                            if let pageID = pageIDForTask(rowID.id) {
+                                                store.deleteTask(in: pageID, id: rowID.id)
                                             }
                                         },
                                         onToggleDaily: { newValue in
                                             toggleDailyForTaskBinding($task, to: newValue)
                                         },
                                         onMoveToPage: { targetPageID in
-                                            if let srcPageID = pageIDForTask(tid) {
-                                                store.moveTask(tid, from: srcPageID, to: targetPageID)
+                                            if let srcPageID = pageIDForTask(rowID.id) {
+                                                store.moveTask(rowID.id, from: srcPageID, to: targetPageID)
                                             }
                                         }
                                     )
@@ -386,9 +394,28 @@ struct ContentView: View {
             if !page.isDaily {
                 Button("إعادة تسمية") { renamingPage = page; renameText = page.name }
                 Button("حذف الصفحة", role: .destructive) {
-                    store.deletePage(id: page.id)
-                    if selectedPageID == page.id { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
+                    pageToDelete = page
                 }
+            }
+        }
+        .alert("حذف الصفحة", isPresented: Binding(
+            get: { pageToDelete?.id == page.id },
+            set: { if !$0 { pageToDelete = nil } }
+        )) {
+            Button("حذف", role: .destructive) {
+                if let p = pageToDelete {
+                    store.deletePage(id: p.id)
+                    if selectedPageID == p.id { selectedPageID = store.dailyPageID ?? store.pages.first?.id }
+                    pageToDelete = nil
+                }
+            }
+            Button("إلغاء", role: .cancel) { pageToDelete = nil }
+        } message: {
+            let count = page.tasks.count
+            if count > 0 {
+                Text("سيتم حذف صفحة \"\(page.name)\" وجميع المهام فيها (\(count) مهمة) بشكل نهائي.")
+            } else {
+                Text("سيتم حذف صفحة \"\(page.name)\" بشكل نهائي.")
             }
         }
     }
