@@ -107,22 +107,37 @@ extension View {
 
 struct QLPreview: UIViewControllerRepresentable {
     let urls: [URL]
+    @Environment(\.dismiss) private var dismiss
 
-    func makeUIViewController(context: Context) -> QLPreviewController {
+    func makeUIViewController(context: Context) -> UINavigationController {
         let controller = QLPreviewController()
         controller.dataSource = context.coordinator
-        return controller
+        controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "تم",
+            style: .done,
+            target: context.coordinator,
+            action: #selector(Coordinator.closeTapped)
+        )
+        let nav = UINavigationController(rootViewController: controller)
+        return nav
     }
 
-    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {
+        context.coordinator.dismissAction = dismiss
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(urls: urls) }
 
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
         let urls: [URL]
+        var dismissAction: DismissAction?
         init(urls: [URL]) { self.urls = urls }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { urls.count }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { urls[index] as QLPreviewItem }
+
+        @objc func closeTapped() {
+            dismissAction?()
+        }
     }
 }
 

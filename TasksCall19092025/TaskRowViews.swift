@@ -35,10 +35,15 @@ struct TaskRowContainer: View {
             .buttonStyle(.borderless)
             .padding(.leading, 4)
 
-            // ── NavigationLink يغطي باقي الصف ──
-            NavigationLink {
-                TaskDetailView(task: $task, onToggleDaily: onToggleDaily)
-            } label: {
+            // ── NavigationLink مخفي بدون سهم ──
+            ZStack(alignment: .leading) {
+                NavigationLink {
+                    TaskDetailView(task: $task, onToggleDaily: onToggleDaily)
+                } label: {
+                    EmptyView()
+                }
+                .opacity(0)
+
                 TaskCardRow(task: $task, pageName: pageName)
             }
         }

@@ -150,16 +150,22 @@ final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentD
     }
 
     func loadAd() {
+        #if DEBUG
         NSLog("🎬 RewardedAd: بدء تحميل الإعلان...")
+        #endif
         GADRewardedAd.load(withAdUnitID: AdConfig.rewardedAdUnitID, request: GADRequest()) { [weak self] ad, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error = error {
+                    #if DEBUG
                     NSLog("🎬 RewardedAd: فشل التحميل — \(error.localizedDescription)")
+                    #endif
                     self.isAdReady = false
                     return
                 }
+                #if DEBUG
                 NSLog("🎬 RewardedAd: ✅ تم التحميل بنجاح")
+                #endif
                 self.rewardedAd = ad
                 self.rewardedAd?.fullScreenContentDelegate = self
                 self.isAdReady = true
@@ -175,10 +181,14 @@ final class RewardedAdManager: NSObject, ObservableObject, GADFullScreenContentD
         }
         self.onRewardEarned = onReward
         guard let topVC = Self.topViewController() else {
+            #if DEBUG
             NSLog("🎬 RewardedAd: ❌ لم يتم العثور على ViewController")
+            #endif
             return
         }
+        #if DEBUG
         NSLog("🎬 RewardedAd: عرض الإعلان من \(type(of: topVC))")
+        #endif
         ad.present(fromRootViewController: topVC) { [weak self] in
             // المستخدم شاهد الإعلان كاملاً — يستحق المكافأة
             self?.rewardEarned = true

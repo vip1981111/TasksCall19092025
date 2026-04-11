@@ -683,14 +683,23 @@ final class TasksStore: ObservableObject {
             return
         }
 
+        // تحقق من الإلغاء بعد التحميل (تغييرات محلية جديدة حصلت أثناء التحميل)
+        guard !Task.isCancelled else { return }
+
         // 3. دمج البيانات
         let merged = mergeData(local: localBackup, remote: remoteData)
 
         // 4. رفع النتيجة المدمجة
         await cloudKit.upload(data: merged)
 
-        // 5. تطبيق المدمج محلياً (بدون trigger didSet)
-        applyMergedPages(from: merged)
+        // تحقق نهائي من الإلغاء قبل تطبيق البيانات
+        guard !Task.isCancelled else { return }
+
+        // 5. تطبيق المدمج محلياً — فقط إذا لم تتغير البيانات محلياً أثناء المزامنة
+        let currentLocal = generateSyncJSON()
+        if currentLocal == localBackup {
+            applyMergedPages(from: merged)
+        }
     }
 
     /// استعادة تلقائية بعد إعادة تثبيت التطبيق
@@ -783,8 +792,8 @@ final class TasksStore: ObservableObject {
                 let nameExists = mergedPagesMap.values.contains { $0.name == page.name }
                 if nameExists {
                     // ادمج مهام هذه الصفحة مع الصفحة المكررة بالاسم
-                    if let existingId = mergedPagesMap.first(where: { $0.value.name == page.name })?.key {
-                        var existingPage = mergedPagesMap[existingId]!
+                    if let existingId = mergedPagesMap.first(where: { $0.value.name == page.name })?.key,
+                       var existingPage = mergedPagesMap[existingId] {
                         existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
                         mergedPagesMap[existingId] = existingPage
                     }

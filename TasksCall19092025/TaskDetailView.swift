@@ -31,6 +31,7 @@ struct TaskDetailView: View {
     @State private var showRenameAttachmentAlert: Bool = false
     @State private var attachmentPendingDelete: TaskAttachment? = nil
     @State private var showDeleteAttachmentConfirm: Bool = false
+    @FocusState private var isAnyFieldFocused: Bool
 
     @State private var selectedWeekday: Int = 1
     @State private var selectedMonthDay: Int = 1
@@ -96,6 +97,12 @@ struct TaskDetailView: View {
         }
         .navigationTitle("تفاصيل المهمة")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("تم") { dismissKeyboard() }
+            }
+        }
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -213,7 +220,14 @@ struct TaskDetailView: View {
             ), axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(3...6)
+                .focused($isAnyFieldFocused)
         }
+    }
+
+    /// إخفاء الكيبورد
+    private func dismissKeyboard() {
+        isAnyFieldFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     // MARK: - قسم التذكير بالتاريخ والوقت
@@ -244,6 +258,7 @@ struct TaskDetailView: View {
                 Toggle("", isOn: Binding(
                     get: { task.dueDate != nil },
                     set: { on in
+                        dismissKeyboard()
                         if on {
                             let defaultDate = Calendar.current.date(byAdding: .hour, value: 1, to: Date()) ?? Date()
                             updateTask { t in t.dueDate = defaultDate }
@@ -268,6 +283,7 @@ struct TaskDetailView: View {
             if isReminderOn {
                 VStack(spacing: 12) {
                     Button {
+                        dismissKeyboard()
                         withAnimation(.easeInOut(duration: 0.3)) {
                             showDateCalendar.toggle()
                         }
@@ -300,20 +316,30 @@ struct TaskDetailView: View {
                     if showDateCalendar {
                         VStack(spacing: 10) {
                             DatePicker("اختر التاريخ والوقت",
-                                       selection: Binding(
-                                           get: { selectedReminderDate },
-                                           set: { newDate in
-                                               selectedReminderDate = newDate
-                                               updateTask { t in t.dueDate = newDate }
-                                               store.scheduleTaskNotification(for: task)
-                                           }
-                                       ),
-                                       in: Date()...,
+                                       selection: $selectedReminderDate,
+                                       in: Calendar.current.startOfDay(for: Date())...,
                                        displayedComponents: [.date, .hourAndMinute])
                             .datePickerStyle(.graphical)
                             .environment(\.locale, Locale(identifier: "ar"))
                             .environment(\.calendar, Calendar(identifier: .gregorian))
                             .tint(theme.accentColor)
+
+                            // ── زر تم لتأكيد التاريخ وحفظه وإغلاق التقويم ──
+                            Button {
+                                updateTask { t in t.dueDate = selectedReminderDate }
+                                store.scheduleTaskNotification(for: task)
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    showDateCalendar = false
+                                }
+                            } label: {
+                                Text("تم")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(theme.accentColor)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
                         }
                         .padding(8)
                         .background(theme.reminderBackground.opacity(0.5))
@@ -770,6 +796,7 @@ struct TaskDetailView: View {
             TextField("خطوة جديدة", text: $newStepTitle)
                 .textFieldStyle(.roundedBorder)
                 .submitLabel(.done)
+                .focused($isAnyFieldFocused)
                 .onSubmit {
                     addStep()
                 }
@@ -777,41 +804,28 @@ struct TaskDetailView: View {
                 Text("لا توجد خطوات").foregroundStyle(.secondary).font(.subheadline)
             } else {
                 ForEach(task.steps) { step in
-                    HStack {
-                        Button {
-                            if let idx = task.steps.firstIndex(where: { $0.id == step.id }) {
+                    StepRowView(
+                        step: step,
+                        priorityColor: task.priority.color,
+                        onToggle: {
+                            let stepID = step.id
+                            let newValue = !step.isDone
+                            DispatchQueue.main.async {
                                 updateTask { t in
-                                    t.steps[idx].isDone.toggle()
-                                    t.steps[idx].completedAt = t.steps[idx].isDone ? Date() : nil
+                                    if let idx = t.steps.firstIndex(where: { $0.id == stepID }) {
+                                        t.steps[idx].isDone = newValue
+                                        t.steps[idx].completedAt = newValue ? Date() : nil
+                                    }
                                 }
                             }
-                        } label: {
-                            Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(task.priority.color)
-                        }
-                        .buttonStyle(.plain)
-                        Text(step.title)
-                            .strikethrough(step.isDone, color: .secondary)
-                            .foregroundStyle(step.isDone ? .secondary : .primary)
-                        Spacer()
-                        if let completedAt = step.completedAt {
-                            Text(shortDate(completedAt))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(8)
-                    .background(Color.secondary.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
+                        },
+                        onDelete: {
+                            let stepID = step.id
                             updateTask { t in
-                                t.steps.removeAll { $0.id == step.id }
+                                t.steps.removeAll { $0.id == stepID }
                             }
-                        } label: {
-                            Label("حذف", systemImage: "trash")
                         }
-                    }
+                    )
                 }
             }
         }
@@ -842,6 +856,7 @@ struct TaskDetailView: View {
                 .padding(8)
                 .background(Color.secondary.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .focused($isAnyFieldFocused)
         }
         .padding(.horizontal)
     }
@@ -888,6 +903,50 @@ struct TaskDetailView: View {
         case .document: return "doc"
         case .audio: return "waveform"
         case .other: return "paperclip"
+        }
+    }
+}
+
+// MARK: - Step Row View (منفصل لمنع إعادة الرسم غير المطلوبة)
+
+private struct StepRowView: View {
+    let step: TaskStep
+    let priorityColor: Color
+    let onToggle: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack {
+            Button {
+                onToggle()
+            } label: {
+                Image(systemName: step.isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(priorityColor)
+                    .font(.system(size: 22))
+                    .contentShape(Rectangle())
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.borderless)
+
+            Text(step.title)
+                .strikethrough(step.isDone, color: .secondary)
+                .foregroundStyle(step.isDone ? .secondary : .primary)
+            Spacer()
+            if let completedAt = step.completedAt {
+                Text(completedAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .contextMenu {
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label("حذف", systemImage: "trash")
+            }
         }
     }
 }
