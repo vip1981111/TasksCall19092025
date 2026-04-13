@@ -695,27 +695,27 @@ final class TasksStore: ObservableObject {
         // تحقق نهائي من الإلغاء قبل تطبيق البيانات
         guard !Task.isCancelled else { return }
 
-        // 5. تطبيق المدمج محلياً — فقط إذا لم تتغير البيانات محلياً أثناء المزامنة
-        let currentLocal = generateSyncJSON()
-        if currentLocal == localBackup {
-            applyMergedPages(from: merged)
-        }
+        // 5. تطبيق المدمج محلياً دائماً
+        applyMergedPages(from: merged)
     }
 
     /// استعادة تلقائية بعد إعادة تثبيت التطبيق
     func tryAutoRestore() async {
         guard cloudKit.iCloudAvailable else { return }
 
-        // كشف البيانات الافتراضية — لو المستخدم ما أضاف شي بعد
+        // كشف حالتين تستوجبان الاستعادة:
+        // ١) البيانات افتراضية (ما أضاف المستخدم شيئاً بعد)
+        // ٢) البيانات المحلية فارغة تماماً (بعد حذف التطبيق وإعادة تثبيته)
         let defaultTaskTitles: Set<String> = ["كتابة تقرير", "قراءة البريد", "مراجعة المهام"]
         let allTaskTitles = Set(pages.flatMap { $0.tasks.map { $0.title } })
         let isDefault = allTaskTitles.isSubset(of: defaultTaskTitles)
+        let isEmpty = pages.allSatisfy { $0.tasks.isEmpty }
 
-        guard isDefault else { return }
+        guard isDefault || isEmpty else { return }
 
         guard let remoteData = await cloudKit.download() else { return }
 
-        // استبدال كامل — لا دمج مع الافتراضية
+        // استبدال كامل — لا دمج مع الافتراضية أو الفارغة
         applyMergedPages(from: remoteData)
     }
 
