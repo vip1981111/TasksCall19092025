@@ -12,9 +12,19 @@ import ZIPFoundation
 
 @MainActor
 final class TasksStore: ObservableObject {
-    // flag لمنع sync loop عند تطبيق بيانات iCloud
+    // flags لمنع sync loop وتزامن متعدد
     private var isApplyingRemoteSync = false
-    @Published var pages: [TaskPage] = [] { didSet { save(); if !isApplyingRemoteSync { syncToCloudDebounced() } } }
+    private var isSyncInProgress = false
+    private var hasPendingLocalChanges = false
+    @Published var pages: [TaskPage] = [] {
+        didSet {
+            save()
+            if !isApplyingRemoteSync {
+                hasPendingLocalChanges = true
+                syncToCloudDebounced()
+            }
+        }
+    }
     @Published var notificationsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")
@@ -170,6 +180,7 @@ final class TasksStore: ObservableObject {
         withAnimation {
             for j in pages[i].tasks.indices where ids.contains(pages[i].tasks[j].id) {
                 pages[i].tasks[j].isDone = done
+                pages[i].tasks[j].modifiedAt = Date()
                 if done {
                     for k in pages[i].tasks[j].steps.indices {
                         pages[i].tasks[j].steps[k].isDone = true
@@ -182,7 +193,7 @@ final class TasksStore: ObservableObject {
 
     func setPriority(in pageID: UUID, ids: Set<UUID>, priority: TaskPriority) {
         guard let i = pages.firstIndex(where: { $0.id == pageID }) else { return }
-        withAnimation { for j in pages[i].tasks.indices where ids.contains(pages[i].tasks[j].id) { pages[i].tasks[j].priority = priority } }
+        withAnimation { for j in pages[i].tasks.indices where ids.contains(pages[i].tasks[j].id) { pages[i].tasks[j].priority = priority; pages[i].tasks[j].modifiedAt = Date() } }
     }
 
     func moveTasks(in pageID: UUID, from source: IndexSet, to destination: Int) {
@@ -210,6 +221,7 @@ final class TasksStore: ObservableObject {
               let tIndex = pages[pIndex].tasks.firstIndex(where: { $0.id == taskID }) else { return }
         pages[pIndex].tasks[tIndex].isInDaily = newValue
         pages[pIndex].tasks[tIndex].addedToDailyAt = newValue ? Date() : nil
+        pages[pIndex].tasks[tIndex].modifiedAt = Date()
         if newValue {
             scheduleDailyReminder(for: pages[pIndex].tasks[tIndex])
         } else {
@@ -653,12 +665,12 @@ final class TasksStore: ObservableObject {
 
     // MARK: - مزامنة iCloud مع Merge + Tombstone
 
-    /// مزامنة مؤجلة — تنتظر 2 ثانية بعد آخر تغيير قبل الرفع
+    /// مزامنة مؤجلة — تنتظر 3 ثوانٍ بعد آخر تغيير قبل الرفع
     private func syncToCloudDebounced() {
-        guard cloudKit.syncEnabled else { return }
+        guard cloudKit.syncEnabled, !isSyncInProgress, !isApplyingRemoteSync, hasPendingLocalChanges else { return }
         syncTask?.cancel()
         syncTask = Task {
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }
             await syncNow()
         }
@@ -671,32 +683,88 @@ final class TasksStore: ObservableObject {
 
     /// مزامنة فورية مع دمج (Merge)
     func syncNow() async {
-        guard cloudKit.iCloudAvailable && cloudKit.syncEnabled else { return }
-
-        // 1. توليد JSON محلي مع deletedIds
-        let localBackup = generateSyncJSON()
-
-        // 2. جلب البيانات من iCloud
-        guard let remoteData = await cloudKit.download() else {
-            // لا يوجد بيانات سحابية — ارفع المحلي فقط
-            await cloudKit.upload(data: localBackup)
+        guard cloudKit.iCloudAvailable && cloudKit.syncEnabled else {
+            NSLog("☁️ syncNow skipped: available=\(cloudKit.iCloudAvailable), enabled=\(cloudKit.syncEnabled)")
             return
         }
 
-        // تحقق من الإلغاء بعد التحميل (تغييرات محلية جديدة حصلت أثناء التحميل)
-        guard !Task.isCancelled else { return }
+        guard !isSyncInProgress else {
+            NSLog("☁️ syncNow skipped: already in progress")
+            return
+        }
 
-        // 3. دمج البيانات
-        let merged = mergeData(local: localBackup, remote: remoteData)
+        isSyncInProgress = true
+        hasPendingLocalChanges = false
+        defer { isSyncInProgress = false }
 
-        // 4. رفع النتيجة المدمجة
-        await cloudKit.upload(data: merged)
+        NSLog("☁️ syncNow started — pages: \(pages.count), tasks: \(pages.flatMap { $0.tasks }.count)")
 
-        // تحقق نهائي من الإلغاء قبل تطبيق البيانات
-        guard !Task.isCancelled else { return }
+        // 1. توليد JSON محلي
+        let localBackup = generateSyncJSON()
 
-        // 5. تطبيق المدمج محلياً دائماً
-        applyMergedPages(from: merged)
+        // 2. جلب البيانات من iCloud
+        let remoteData = await cloudKit.download()
+
+        if let remoteData = remoteData {
+            // 3. دمج
+            let merged = mergeData(local: localBackup, remote: remoteData)
+
+            // 4. رفع المدمج
+            await cloudKit.upload(data: merged)
+
+            // 5. مقارنة: هل المدمج يختلف عن المحلي الحالي؟
+            let mergedParsed = try? JSONDecoder().decode(SyncBackup.self, from: merged)
+            let mergedPages = mergedParsed?.pages ?? []
+
+            if !pagesContentEqual(mergedPages, pages) {
+                NSLog("☁️ Merged data has changes — applying locally")
+                applyMergedPages(from: merged)
+            } else {
+                NSLog("☁️ Already in sync — skipping apply ✅")
+            }
+        } else {
+            NSLog("☁️ No remote data — uploading local only")
+            await cloudKit.upload(data: localBackup)
+        }
+
+        NSLog("☁️ syncNow completed ✅")
+    }
+
+    /// مقارنة محتوى الصفحات (بدون مقارنة التواريخ المتغيرة)
+    private func pagesContentEqual(_ a: [TaskPage], _ b: [TaskPage]) -> Bool {
+        guard a.count == b.count else { return false }
+        let aIDs = Set(a.map { $0.id })
+        let bIDs = Set(b.map { $0.id })
+        guard aIDs == bIDs else { return false }
+
+        for pageA in a {
+            guard let pageB = b.first(where: { $0.id == pageA.id }) else { return false }
+            guard pageA.tasks.count == pageB.tasks.count else { return false }
+
+            let aTaskIDs = Set(pageA.tasks.map { $0.id })
+            let bTaskIDs = Set(pageB.tasks.map { $0.id })
+            guard aTaskIDs == bTaskIDs else { return false }
+
+            for taskA in pageA.tasks {
+                guard let taskB = pageB.tasks.first(where: { $0.id == taskA.id }) else { return false }
+                if taskA.isDone != taskB.isDone ||
+                   taskA.title != taskB.title ||
+                   taskA.priority != taskB.priority ||
+                   taskA.isInDaily != taskB.isInDaily ||
+                   taskA.notes != taskB.notes ||
+                   taskA.recurrence != taskB.recurrence ||
+                   taskA.dueDate != taskB.dueDate ||
+                   taskA.steps.count != taskB.steps.count ||
+                   taskA.modifiedAt != taskB.modifiedAt {
+                    return false
+                }
+                // مقارنة حالة الخطوات
+                for (sA, sB) in zip(taskA.steps, taskB.steps) {
+                    if sA.id != sB.id || sA.isDone != sB.isDone || sA.title != sB.title { return false }
+                }
+            }
+        }
+        return true
     }
 
     /// استعادة تلقائية بعد إعادة تثبيت التطبيق
@@ -837,12 +905,10 @@ final class TasksStore: ObservableObject {
         for task in remote {
             if deletedIds.contains(task.id.uuidString) { continue }
             if let existing = merged[task.id] {
-                // احتفظ بالأحدث (بناء على createdAt أو أي تغيير)
-                if task.createdAt > existing.createdAt || task.isDone != existing.isDone {
-                    // إذا المهمة البعيدة أحدث أو حالتها تغيرت
-                    if task.createdAt > existing.createdAt {
-                        merged[task.id] = task
-                    }
+                // احتفظ بالأحدث بناءً على modifiedAt
+                if task.modifiedAt > existing.modifiedAt {
+                    NSLog("☁️ Merge: task '\(task.title)' — remote is newer (remote: \(task.modifiedAt), local: \(existing.modifiedAt))")
+                    merged[task.id] = task
                 }
             } else {
                 merged[task.id] = task

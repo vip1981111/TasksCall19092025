@@ -91,6 +91,7 @@ struct TaskRowContainer: View {
         store.objectWillChange.send()
         withAnimation(.easeInOut(duration: 0.2)) {
             task.isDone.toggle()
+            task.modifiedAt = Date()
             if task.isDone {
                 for i in task.steps.indices {
                     task.steps[i].isDone = true

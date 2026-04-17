@@ -112,18 +112,24 @@ final class CloudKitManager: ObservableObject {
 
     // MARK: - رفع البيانات مع Conflict Resolution
     func upload(data: Data) async {
-        guard iCloudAvailable && syncEnabled else { return }
+        guard iCloudAvailable && syncEnabled else {
+            NSLog("☁️ Upload skipped: available=\(iCloudAvailable), enabled=\(syncEnabled)")
+            return
+        }
 
         isSyncing = true
         syncError = nil
+        NSLog("☁️ Upload starting... data size: \(data.count) bytes")
 
         do {
             // Fetch-then-save: جلب السجل الموجود أو إنشاء جديد
             let record: CKRecord
             do {
                 record = try await privateDB.record(for: recordID)
+                NSLog("☁️ Found existing record, updating...")
             } catch {
                 record = CKRecord(recordType: recordType, recordID: recordID)
+                NSLog("☁️ No existing record, creating new...")
             }
 
             record["pagesData"] = data as CKRecordValue
@@ -132,19 +138,22 @@ final class CloudKitManager: ObservableObject {
 
             do {
                 try await privateDB.save(record)
+                NSLog("☁️ Upload SUCCESS ✅")
             } catch let ckError as CKError where ckError.code == .serverRecordChanged {
-                // Conflict Resolution: خذ نسخة السيرفر وحدّثها
+                NSLog("☁️ Conflict detected, resolving...")
                 if let serverRecord = ckError.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord {
                     serverRecord["pagesData"] = data as CKRecordValue
                     serverRecord["lastModified"] = Date() as CKRecordValue
                     serverRecord["deviceName"] = deviceName() as CKRecordValue
                     try await privateDB.save(serverRecord)
+                    NSLog("☁️ Conflict resolved ✅")
                 }
             }
 
             self.lastSyncDate = Date()
             self.isSyncing = false
         } catch {
+            NSLog("☁️ Upload FAILED ❌: \(error.localizedDescription)")
             self.syncError = "فشل الرفع: \(error.localizedDescription)"
             self.isSyncing = false
         }
@@ -152,28 +161,36 @@ final class CloudKitManager: ObservableObject {
 
     // MARK: - تحميل البيانات من iCloud
     func download() async -> Data? {
-        guard iCloudAvailable else { return nil }
+        guard iCloudAvailable else {
+            NSLog("☁️ Download skipped: iCloud not available")
+            return nil
+        }
 
         isSyncing = true
         syncError = nil
+        NSLog("☁️ Download starting...")
 
         do {
             let record = try await privateDB.record(for: recordID)
+            NSLog("☁️ Record found in iCloud")
 
             guard let data = record["pagesData"] as? Data else {
+                NSLog("☁️ Download: record exists but no pagesData field!")
                 self.syncError = "لا توجد بيانات في السحابة"
                 self.isSyncing = false
                 return nil
             }
 
+            NSLog("☁️ Download SUCCESS ✅ data size: \(data.count) bytes")
             self.lastSyncDate = Date()
             self.isSyncing = false
             return data
         } catch let ckError as CKError where ckError.code == .unknownItem {
-            // لا يوجد سجل بعد — طبيعي لأول مرة
+            NSLog("☁️ Download: no record yet (first time) — will upload")
             self.isSyncing = false
             return nil
         } catch {
+            NSLog("☁️ Download FAILED ❌: \(error.localizedDescription)")
             self.syncError = "فشل التحميل: \(error.localizedDescription)"
             self.isSyncing = false
             return nil

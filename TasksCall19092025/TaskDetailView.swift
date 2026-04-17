@@ -72,10 +72,11 @@ struct TaskDetailView: View {
         }
     }
 
-    /// تحديث حقل في المهمة مع الحفظ الفوري
+    /// تحديث حقل في المهمة مع الحفظ الفوري وتحديث modifiedAt
     private func updateTask(_ modify: (inout TaskItem) -> Void) {
         guard let loc = taskLocation else { return }
         modify(&store.pages[loc.pageIndex].tasks[loc.taskIndex])
+        store.pages[loc.pageIndex].tasks[loc.taskIndex].modifiedAt = Date()
     }
 
     var body: some View {

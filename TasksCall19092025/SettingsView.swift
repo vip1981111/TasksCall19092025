@@ -286,10 +286,21 @@ struct SettingsView: View {
                     }
                 }
 
+                // عرض أي خطأ في المزامنة
+                if let error = store.cloudKit.syncError {
+                    Text(error)
+                        .font(.caption).foregroundStyle(.red)
+                        .padding(.vertical, 4)
+                }
+
                 Button {
                     Task {
                         await store.syncNow()
-                        syncAlertMessage = "تمت المزامنة بنجاح ✓"
+                        if let error = store.cloudKit.syncError {
+                            syncAlertMessage = "فشلت المزامنة: \(error)"
+                        } else {
+                            syncAlertMessage = "تمت المزامنة بنجاح ✓"
+                        }
                         showSyncAlert = true
                     }
                 } label: {
@@ -299,7 +310,11 @@ struct SettingsView: View {
                 Button {
                     Task {
                         await store.syncNow()
-                        syncAlertMessage = "تم تحميل ودمج البيانات من iCloud"
+                        if let error = store.cloudKit.syncError {
+                            syncAlertMessage = "فشل التحميل: \(error)"
+                        } else {
+                            syncAlertMessage = "تم تحميل ودمج البيانات من iCloud"
+                        }
                         showSyncAlert = true
                     }
                 } label: {

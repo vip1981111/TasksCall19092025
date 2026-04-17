@@ -154,6 +154,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
     var priority: TaskPriority
 
     var createdAt: Date
+    var modifiedAt: Date
     var recurrence: TaskRecurrence
     var recurrenceTime: Date?
     var dueDate: Date?
@@ -171,6 +172,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
         isDone: Bool = false,
         priority: TaskPriority = .medium,
         createdAt: Date = Date(),
+        modifiedAt: Date = Date(),
         recurrence: TaskRecurrence = .none,
         recurrenceTime: Date? = nil,
         dueDate: Date? = nil,
@@ -186,6 +188,7 @@ struct TaskItem: Identifiable, Hashable, Codable {
         self.isDone = isDone
         self.priority = priority
         self.createdAt = createdAt
+        self.modifiedAt = modifiedAt
         self.recurrence = recurrence
         self.recurrenceTime = recurrenceTime
         self.dueDate = dueDate
@@ -195,6 +198,31 @@ struct TaskItem: Identifiable, Hashable, Codable {
         self.attachments = attachments
         self.isInDaily = isInDaily
         self.addedToDailyAt = addedToDailyAt
+    }
+
+    // Codable — دعم التوافق مع البيانات القديمة (بدون modifiedAt)
+    enum CodingKeys: String, CodingKey {
+        case id, title, isDone, priority, createdAt, modifiedAt, recurrence, recurrenceTime
+        case dueDate, reminderBefore, steps, notes, attachments, isInDaily, addedToDailyAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        isDone = try c.decode(Bool.self, forKey: .isDone)
+        priority = try c.decode(TaskPriority.self, forKey: .priority)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        modifiedAt = try c.decodeIfPresent(Date.self, forKey: .modifiedAt) ?? createdAt
+        recurrence = try c.decode(TaskRecurrence.self, forKey: .recurrence)
+        recurrenceTime = try c.decodeIfPresent(Date.self, forKey: .recurrenceTime)
+        dueDate = try c.decodeIfPresent(Date.self, forKey: .dueDate)
+        reminderBefore = try c.decode(ReminderBefore.self, forKey: .reminderBefore)
+        steps = try c.decode([TaskStep].self, forKey: .steps)
+        notes = try c.decode(String.self, forKey: .notes)
+        attachments = try c.decode([TaskAttachment].self, forKey: .attachments)
+        isInDaily = try c.decode(Bool.self, forKey: .isInDaily)
+        addedToDailyAt = try c.decodeIfPresent(Date.self, forKey: .addedToDailyAt)
     }
 }
 
