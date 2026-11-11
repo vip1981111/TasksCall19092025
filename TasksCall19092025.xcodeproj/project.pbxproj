@@ -11,8 +11,27 @@
 		B1AD000100000001DEADBEEF /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = B1AD000200000002DEADBEEF /* GoogleMobileAds */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AA00000000000000000008A1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A82507082E7DBB5800F6ADE8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A825070F2E7DBB5800F6ADE8;
+			remoteInfo = TasksCall19092025;
+		};
+		BB00000000000000000008A1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A82507082E7DBB5800F6ADE8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A825070F2E7DBB5800F6ADE8;
+			remoteInfo = TasksCall19092025;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TasksCall19092025.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA00000000000000000002A1 /* TasksCall19092025Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TasksCall19092025Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB00000000000000000002A1 /* TasksCall19092025UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TasksCall19092025UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -34,6 +53,16 @@
 			path = TasksCall19092025;
 			sourceTree = "<group>";
 		};
+		AA00000000000000000003A1 /* TasksCall19092025Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TasksCall19092025Tests;
+			sourceTree = "<group>";
+		};
+		BB00000000000000000003A1 /* TasksCall19092025UITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TasksCall19092025UITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +75,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000000000000000005A1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000000000000000005A1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -53,6 +96,8 @@
 			isa = PBXGroup;
 			children = (
 				A82507122E7DBB5800F6ADE8 /* TasksCall19092025 */,
+				AA00000000000000000003A1 /* TasksCall19092025Tests */,
+				BB00000000000000000003A1 /* TasksCall19092025UITests */,
 				A82507112E7DBB5800F6ADE8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -61,6 +106,8 @@
 			isa = PBXGroup;
 			children = (
 				A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */,
+				AA00000000000000000002A1 /* TasksCall19092025Tests.xctest */,
+				BB00000000000000000002A1 /* TasksCall19092025UITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -92,6 +139,48 @@
 			productReference = A82507102E7DBB5800F6ADE8 /* TasksCall19092025.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA00000000000000000001A1 /* TasksCall19092025Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00000000000000000009A1 /* Build configuration list for PBXNativeTarget "TasksCall19092025Tests" */;
+			buildPhases = (
+				AA00000000000000000004A1 /* Sources */,
+				AA00000000000000000005A1 /* Frameworks */,
+				AA00000000000000000006A1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA00000000000000000007A1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA00000000000000000003A1 /* TasksCall19092025Tests */,
+			);
+			name = TasksCall19092025Tests;
+			productName = TasksCall19092025Tests;
+			productReference = AA00000000000000000002A1 /* TasksCall19092025Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		BB00000000000000000001A1 /* TasksCall19092025UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00000000000000000009A1 /* Build configuration list for PBXNativeTarget "TasksCall19092025UITests" */;
+			buildPhases = (
+				BB00000000000000000004A1 /* Sources */,
+				BB00000000000000000005A1 /* Frameworks */,
+				BB00000000000000000006A1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB00000000000000000007A1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BB00000000000000000003A1 /* TasksCall19092025UITests */,
+			);
+			name = TasksCall19092025UITests;
+			productName = TasksCall19092025UITests;
+			productReference = BB00000000000000000002A1 /* TasksCall19092025UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -102,6 +191,14 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					AA00000000000000000001A1 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = A825070F2E7DBB5800F6ADE8;
+					};
+					BB00000000000000000001A1 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = A825070F2E7DBB5800F6ADE8;
+					};
 					A825070F2E7DBB5800F6ADE8 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -126,6 +223,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				AA00000000000000000001A1 /* TasksCall19092025Tests */,
+				BB00000000000000000001A1 /* TasksCall19092025UITests */,
 				A825070F2E7DBB5800F6ADE8 /* TasksCall19092025 */,
 			);
 		};
@@ -133,6 +232,20 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		A825070E2E7DBB5800F6ADE8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA00000000000000000006A1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000000000000000006A1 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -149,7 +262,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000000000000000004A1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000000000000000004A1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA00000000000000000007A1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A825070F2E7DBB5800F6ADE8 /* TasksCall19092025 */;
+			targetProxy = AA00000000000000000008A1 /* PBXContainerItemProxy */;
+		};
+		BB00000000000000000007A1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A825070F2E7DBB5800F6ADE8 /* TasksCall19092025 */;
+			targetProxy = BB00000000000000000008A1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A82507192E7DBB5900F6ADE8 /* Debug */ = {
@@ -353,6 +493,76 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000AA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TasksCall19092025.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TasksCall19092025";
+			};
+			name = Debug;
+		};
+		BB0000000000000000000AA1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TasksCall19092025;
+			};
+			name = Debug;
+		};
+		AA0000000000000000000BA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TasksCall19092025.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TasksCall19092025";
+			};
+			name = Release;
+		};
+		BB0000000000000000000BA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.MHD.TasksCall19092025.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TasksCall19092025;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -370,6 +580,24 @@
 			buildConfigurations = (
 				A825071C2E7DBB5900F6ADE8 /* Debug */,
 				A825071D2E7DBB5900F6ADE8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00000000000000000009A1 /* Build configuration list for PBXNativeTarget "TasksCall19092025Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000AA1 /* Debug */,
+				AA0000000000000000000BA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB00000000000000000009A1 /* Build configuration list for PBXNativeTarget "TasksCall19092025UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000AA1 /* Debug */,
+				BB0000000000000000000BA1 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

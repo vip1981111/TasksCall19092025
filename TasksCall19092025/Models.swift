@@ -234,11 +234,45 @@ struct TaskPage: Identifiable, Codable, Hashable {
     var isDaily: Bool
     var tasks: [TaskItem]
 
-    init(id: UUID = UUID(), name: String, isDaily: Bool = false, tasks: [TaskItem] = []) {
+    var folderName: String?
+    var sortIndex: Int?
+    var modifiedAt: Date?
+
+    init(id: UUID = UUID(), name: String, isDaily: Bool = false, tasks: [TaskItem] = [],
+         folderName: String? = nil, sortIndex: Int? = nil, modifiedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.isDaily = isDaily
         self.tasks = tasks
+        self.folderName = folderName
+        self.sortIndex = sortIndex
+        self.modifiedAt = modifiedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, isDaily, tasks, folderName, sortIndex, modifiedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        isDaily = try c.decode(Bool.self, forKey: .isDaily)
+        tasks = try c.decode([TaskItem].self, forKey: .tasks)
+        folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
+        sortIndex = try c.decodeIfPresent(Int.self, forKey: .sortIndex)
+        modifiedAt = try c.decodeIfPresent(Date.self, forKey: .modifiedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(isDaily, forKey: .isDaily)
+        try c.encode(tasks, forKey: .tasks)
+        try c.encodeIfPresent(folderName, forKey: .folderName)
+        try c.encodeIfPresent(sortIndex, forKey: .sortIndex)
+        try c.encodeIfPresent(modifiedAt, forKey: .modifiedAt)
     }
 }
 

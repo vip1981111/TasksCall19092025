@@ -13,11 +13,13 @@ import ZIPFoundation
 @MainActor
 final class TasksStore: ObservableObject {
     // flags لمنع sync loop وتزامن متعدد
+    private var isLoadingFromDisk = false
     private var isApplyingRemoteSync = false
     private var isSyncInProgress = false
     private var hasPendingLocalChanges = false
     @Published var pages: [TaskPage] = [] {
         didSet {
+            guard !isLoadingFromDisk else { return }
             save()
             if !isApplyingRemoteSync {
                 hasPendingLocalChanges = true
@@ -42,16 +44,39 @@ final class TasksStore: ObservableObject {
         didSet { UserDefaults.standard.set(deleteAttachmentFilesOnRemove, forKey: "deleteAttachmentFilesOnRemove") }
     }
 
+    @Published var loadFailureNotice: String? = nil
+    let isUsingFallbackStorage: Bool
     private let fileURL: URL
     private var syncTask: Task<Void, Never>?
     let cloudKit = CloudKitManager()
 
     init(filename: String = "tasks_pages.json") {
-        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            fatalError("❌ لا يمكن الوصول إلى مجلد المستندات")
+        let fm = FileManager.default
+        let storageDirectory: URL
+        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            storageDirectory = docs
+            isUsingFallbackStorage = false
+        } else if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            storageDirectory = caches
+            isUsingFallbackStorage = true
+        } else {
+            storageDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("TasksCallStorage", isDirectory: true)
+            isUsingFallbackStorage = true
         }
-
-        self.fileURL = docs.appendingPathComponent(filename)
+        if isUsingFallbackStorage {
+            do {
+                try fm.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
+            } catch {
+                #if DEBUG
+                NSLog("⚠️ Could not create fallback storage: \(error.localizedDescription)")
+                #endif
+            }
+            #if DEBUG
+            NSLog("⚠️ Using fallback task storage")
+            #endif
+        }
+        self.fileURL = storageDirectory.appendingPathComponent(filename)
         self.notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         if let ts = UserDefaults.standard.object(forKey: "dailyReminderTime") as? Double {
             self.dailyReminderTime = Date(timeIntervalSince1970: ts)
@@ -71,16 +96,68 @@ final class TasksStore: ObservableObject {
     // MARK: - تحميل وحفظ البيانات
 
     func load() {
+        isLoadingFromDisk = true
         isApplyingRemoteSync = true
+        defer {
+            isLoadingFromDisk = false
+            isApplyingRemoteSync = false
+        }
+        loadFailureNotice = nil
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: fileURL.path) else {
+            pages = Self.defaultPages()
+            save()
+            return
+        }
         do {
             let data = try Data(contentsOf: fileURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
             pages = decoded.isEmpty ? Self.defaultPages() : decoded
+            normalizeSortIndicesIfNeeded()
+            return
         } catch {
+            let quarantined = quarantineCorruptFile()
             pages = Self.defaultPages()
-            save()
+            loadFailureNotice = "تعذّر قراءة ملف المهام. حُفظت نسخة من الملف الأصلي: \(quarantined?.lastPathComponent ?? "—")"
+            #if DEBUG
+            NSLog("⚠️ load decode failed: \(error.localizedDescription)")
+            #endif
+            return
         }
-        isApplyingRemoteSync = false
+    }
+
+    private var quarantinePrefix: String {
+        fileURL.deletingPathExtension().lastPathComponent + ".corrupt-"
+    }
+
+    @discardableResult
+    private func quarantineCorruptFile() -> URL? {
+        do {
+            let fm = FileManager.default
+            let directory = fileURL.deletingLastPathComponent()
+            let fileExtension = fileURL.pathExtension.isEmpty ? "json" : fileURL.pathExtension
+            let original = try Data(contentsOf: fileURL)
+            let candidates = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            for candidate in candidates where candidate.lastPathComponent.hasPrefix(quarantinePrefix)
+                && candidate.pathExtension == fileExtension {
+                if try Data(contentsOf: candidate) == original { return candidate }
+            }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+            var date = Date()
+            var destination: URL
+            // Preserve an existing, different backup even when failures occur in the same second.
+            repeat {
+                destination = directory.appendingPathComponent("\(quarantinePrefix)\(formatter.string(from: date)).\(fileExtension)")
+                date = date.addingTimeInterval(1)
+            } while fm.fileExists(atPath: destination.path)
+            try fm.copyItem(at: fileURL, to: destination)
+            return destination
+        } catch {
+            return nil
+        }
     }
 
     func save() {
@@ -122,12 +199,145 @@ final class TasksStore: ObservableObject {
         }
     }
 
+    /// Stable ordering also preserves the array order of legacy pages.
+    private static func sortedNonDailyPages(_ source: [TaskPage]) -> [TaskPage] {
+        source.enumerated().filter { !$0.element.isDaily }.sorted {
+            let lhs = $0.element.sortIndex ?? Int.max
+            let rhs = $1.element.sortIndex ?? Int.max
+            return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
+        }.map { $0.element }
+    }
+
+    var orderedNonDailyPages: [TaskPage] { Self.sortedNonDailyPages(pages) }
+    var orderedPages: [TaskPage] { pages.filter { $0.isDaily } + orderedNonDailyPages }
+    var dailyPage: TaskPage? { pages.first { $0.isDaily } }
+
+    private func normalizedFolderName(_ name: String?) -> String? {
+        guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    var folderNames: [String] {
+        var seen = Set<String>()
+        return orderedNonDailyPages.compactMap {
+            guard let name = normalizedFolderName($0.folderName),
+                  seen.insert(name.lowercased()).inserted else { return nil }
+            return name
+        }
+    }
+
+    /// nil includes every non-daily page.
+    func pages(inFolder folder: String?) -> [TaskPage] {
+        guard let folder = normalizedFolderName(folder) else { return orderedNonDailyPages }
+        return orderedNonDailyPages.filter { normalizedFolderName($0.folderName) == folder }
+    }
+
+    func setFolder(_ folder: String?, forPage pageID: UUID) {
+        guard let index = pages.firstIndex(where: { $0.id == pageID && !$0.isDaily }) else { return }
+        let normalized = normalizedFolderName(folder)
+        // Reuse the existing spelling instead of creating a case-only duplicate.
+        let canonical = normalized.flatMap { name in
+            folderNames.first { $0.lowercased() == name.lowercased() } ?? name
+        }
+        guard pages[index].folderName != canonical else { return }
+        var updated = pages
+        updated[index].folderName = canonical
+        updated[index].modifiedAt = Date()
+        withAnimation { pages = updated }
+    }
+
+    @discardableResult
+    func renameFolder(_ oldName: String, to newName: String) -> Bool {
+        guard let old = normalizedFolderName(oldName), let new = normalizedFolderName(newName),
+              pages.contains(where: { !$0.isDaily && normalizedFolderName($0.folderName) == old }),
+              !folderNames.contains(where: { $0.lowercased() == new.lowercased() }) else { return false }
+        var updated = pages
+        let now = Date()
+        for i in updated.indices where !updated[i].isDaily && normalizedFolderName(updated[i].folderName) == old {
+            updated[i].folderName = new
+            updated[i].modifiedAt = now
+        }
+        withAnimation { pages = updated }
+        return true
+    }
+
+    func deleteFolder(_ name: String) {
+        guard let name = normalizedFolderName(name) else { return }
+        var updated = pages
+        let now = Date()
+        for i in updated.indices where !updated[i].isDaily && normalizedFolderName(updated[i].folderName) == name {
+            updated[i].folderName = nil
+            updated[i].modifiedAt = now
+        }
+        guard updated != pages else { return }
+        withAnimation { pages = updated }
+    }
+
+    func movePages(inFolder folder: String?, from source: IndexSet, to destination: Int) {
+        var global = orderedNonDailyPages
+        let folder = normalizedFolderName(folder)
+        let slots = global.indices.filter { folder == nil || normalizedFolderName(global[$0].folderName) == folder }
+        var subset = slots.map { global[$0] }
+        guard !source.isEmpty, source.allSatisfy({ subset.indices.contains($0) }),
+              (0...subset.count).contains(destination) else { return }
+        subset.move(fromOffsets: source, toOffset: destination)
+        for k in slots.indices { global[slots[k]] = subset[k] }
+        applySortIndices(global)
+    }
+
+    func normalizeSortIndices() {
+        applySortIndices(orderedNonDailyPages)
+    }
+
+    private func normalizeSortIndicesIfNeeded() {
+        guard pages.contains(where: { !$0.isDaily && $0.sortIndex == nil }) else { return }
+        normalizeSortIndices()
+    }
+
+    private func applySortIndices(_ ordered: [TaskPage]) {
+        var updated = pages
+        let now = Date()
+        for (index, page) in ordered.enumerated() {
+            guard let i = updated.firstIndex(where: { $0.id == page.id }),
+                  updated[i].sortIndex != index else { continue }
+            updated[i].sortIndex = index
+            updated[i].modifiedAt = now
+        }
+        guard updated != pages else { return }
+        withAnimation { pages = updated }
+    }
+
     @discardableResult
     func addPage(named name: String) -> Bool {
+        addPage(named: name, folderName: nil)
+    }
+
+    @discardableResult
+    func addPage(named name: String, folderName: String?) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         guard !isDuplicatePageName(trimmed) else { return false }
-        withAnimation { pages.append(TaskPage(name: trimmed, isDaily: false, tasks: [])) }
+        let normalized = normalizedFolderName(folderName)
+        let canonical = normalized.flatMap { name in
+            folderNames.first { $0.lowercased() == name.lowercased() } ?? name
+        }
+        var updated = pages
+        var maximum = updated.filter { !$0.isDaily }.compactMap { $0.sortIndex }.max()
+        // Avoid overflow for a valid JSON file containing Int.max.
+        if maximum == Int.max {
+            let now = Date()
+            for (index, page) in orderedNonDailyPages.enumerated() {
+                if let i = updated.firstIndex(where: { $0.id == page.id }), updated[i].sortIndex != index {
+                    updated[i].sortIndex = index
+                    updated[i].modifiedAt = now
+                }
+            }
+            maximum = updated.filter { !$0.isDaily }.compactMap { $0.sortIndex }.max()
+        }
+        updated.append(TaskPage(name: trimmed, folderName: canonical,
+                                sortIndex: maximum.map { $0 + 1 } ?? 0, modifiedAt: Date()))
+        withAnimation { pages = updated }
         return true
     }
 
@@ -137,7 +347,10 @@ final class TasksStore: ObservableObject {
         let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return false }
         guard !isDuplicatePageName(t, excludingID: id) else { return false }
-        withAnimation { pages[i].name = t }
+        var updated = pages
+        updated[i].name = t
+        updated[i].modifiedAt = Date()
+        withAnimation { pages = updated }
         return true
     }
 
@@ -733,12 +946,14 @@ final class TasksStore: ObservableObject {
     /// مقارنة محتوى الصفحات (بدون مقارنة التواريخ المتغيرة)
     private func pagesContentEqual(_ a: [TaskPage], _ b: [TaskPage]) -> Bool {
         guard a.count == b.count else { return false }
-        let aIDs = Set(a.map { $0.id })
-        let bIDs = Set(b.map { $0.id })
-        guard aIDs == bIDs else { return false }
+        guard a.map(\.id) == b.map(\.id) else { return false }
 
         for pageA in a {
             guard let pageB = b.first(where: { $0.id == pageA.id }) else { return false }
+            guard pageA.name == pageB.name,
+                  pageA.folderName == pageB.folderName,
+                  pageA.sortIndex == pageB.sortIndex,
+                  pageA.isDaily == pageB.isDaily else { return false }
             guard pageA.tasks.count == pageB.tasks.count else { return false }
 
             let aTaskIDs = Set(pageA.tasks.map { $0.id })
@@ -854,6 +1069,15 @@ final class TasksStore: ObservableObject {
             if var existingPage = mergedPagesMap[page.id] {
                 // الصفحة موجودة بنفس الـ ID — ادمج المهام
                 existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
+                let localDate = existingPage.modifiedAt ?? .distantPast
+                let remoteDate = page.modifiedAt ?? .distantPast
+                if remoteDate > localDate {
+                    existingPage.name = page.name
+                    existingPage.folderName = page.folderName
+                    existingPage.sortIndex = page.sortIndex
+                }
+                let latestDate = max(localDate, remoteDate)
+                existingPage.modifiedAt = latestDate == .distantPast ? nil : latestDate
                 mergedPagesMap[page.id] = existingPage
             } else {
                 // صفحة جديدة — تحقق من عدم تكرار الاسم
@@ -879,6 +1103,8 @@ final class TasksStore: ObservableObject {
         for i in mergedPages.indices {
             mergedPages[i].tasks = mergedPages[i].tasks.filter { !allDeletedIds.contains($0.id.uuidString) }
         }
+
+        mergedPages = mergedPages.filter { $0.isDaily } + Self.sortedNonDailyPages(mergedPages)
 
         let merged = SyncBackup(
             version: "1.1",
