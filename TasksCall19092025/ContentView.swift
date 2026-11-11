@@ -13,7 +13,9 @@ struct ContentView: View {
     @EnvironmentObject private var subscriptionManager: SubscriptionManager
     @EnvironmentObject private var themeManager: ThemeManager
     @EnvironmentObject private var rewardedAd: RewardedAdManager
-    @Environment(\.editMode) private var editMode
+    /// وضع التحرير مملوك هنا ويُحقن في القائمة صراحةً.
+    /// قراءة \.editMode من البيئة لا تعمل لأن List داخل NavigationStack الذي يملك بيئته الخاصة.
+    @State private var editMode: EditMode = .inactive
     @State private var selectedPageID: UUID? = nil
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
@@ -189,6 +191,7 @@ struct ContentView: View {
                         .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                         .listRowSpacing(4)
                         .padding(.top, 4)
+                        .environment(\.editMode, $editMode)
                     }
 
                     #if !targetEnvironment(macCatalyst)
@@ -273,16 +276,17 @@ struct ContentView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if isReorderAvailable {
-                        Button(editMode?.wrappedValue.isEditing == true ? "تم" : "تحرير") {
-                            if editMode?.wrappedValue.isEditing == true {
-                                withAnimation { editMode?.wrappedValue = .inactive }
+                        Button(editMode.isEditing ? "تم" : "تحرير") {
+                            if editMode.isEditing {
+                                withAnimation(.easeInOut(duration: 0.25)) { editMode = .inactive }
                                 return
                             }
-                            if sortByPriority {
-                                sortByPriority = false
-                                showSortDisabledNotice()
+                            let wasSorted = sortByPriority
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                if wasSorted { sortByPriority = false }
+                                editMode = .active
                             }
-                            withAnimation { editMode?.wrappedValue = .active }
+                            if wasSorted { showSortDisabledNotice() }
                         }
                         .accessibilityIdentifier("editToggleButton")
                     }
@@ -375,7 +379,7 @@ struct ContentView: View {
                 store.requestNotificationAuthorizationIfNeeded()
             }
             .onChange(of: canReorderTasks) { _, canReorder in
-                if !canReorder { editMode?.wrappedValue = .inactive }
+                if !canReorder { editMode = .inactive }
             }
             .onChange(of: store.folderNames) { _, _ in
                 ensureSelectionInsideFolder()
