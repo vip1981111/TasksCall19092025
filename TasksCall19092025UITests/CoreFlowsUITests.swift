@@ -98,30 +98,58 @@ final class CoreFlowsUITests: XCTestCase {
         deleteTask(second)
     }
 
-    func test03_EditButtonDisabledWhenSortedOrFiltered() {
-        let edit = app.buttons["editToggleButton"]
-        appears(edit, "زر التحرير لم يظهر")
-        let toggle = priorityToggle()
-        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يكون مفعلاً افتراضياً")
-        XCTAssertFalse(edit.isEnabled, "زر التحرير يجب أن يكون معطّلاً أثناء الترتيب بالأولوية لأن إعادة الترتيب اليدوي تنقل المهمة الخطأ")
-        toggle.tap()
-        setFilter("الكل")
-        clear(app.textFields["searchField"])
-        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يتاح عند إيقاف الترتيب وإزالة البحث والتصفية")
+    func test03_EditButtonVisibilityAndSortInteraction() {
+        tap(chip("عام"), "صفحة عام لم تظهر")
         setFilter("غير منجزة")
-        XCTAssertFalse(edit.isEnabled, "زر التحرير يجب أن يتعطل أثناء تصفية المهام")
-        setFilter("الكل")
+        let toggle = priorityToggle()
+        defer {
+            if toggle.exists && toggle.value as? String != "1" {
+                tap(toggle, "تعذر إعادة تشغيل ترتيب الأولوية للتنظيف")
+            }
+            setFilter("غير منجزة")
+        }
+        if toggle.value as? String != "1" {
+            tap(toggle, "تعذر تفعيل ترتيب الأولوية للحالة الافتراضية")
+        }
+        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يكون مفعلاً في الحالة الافتراضية")
+
+        let edit = app.buttons["editToggleButton"]
+        appears(edit, "زر التحرير لم يظهر في الحالة الافتراضية")
+        XCTAssertTrue(edit.exists, "زر التحرير يجب أن يظهر في الحالة الافتراضية")
+        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يكون متاحاً؛ تعطيله في الحالة الافتراضية هو الخطأ الذي أبلغ عنه المالك")
+
+        for filter in ["الكل", "منجزة", "غير منجزة"] {
+            setFilter(filter)
+            appears(edit, "زر التحرير لم يظهر تحت فلتر \(filter)")
+            XCTAssertTrue(edit.exists, "زر التحرير يجب أن يظهر تحت فلتر \(filter)")
+            XCTAssertTrue(edit.isEnabled, "فلتر \(filter) يجب ألا يمنع الترتيب اليدوي أو يعطّل زر التحرير")
+        }
+
         let search = app.textFields["searchField"]
         tap(search, "حقل البحث لم يظهر")
         search.typeText(unique("بحث اختبار"))
-        XCTAssertFalse(edit.isEnabled, "زر التحرير يجب أن يتعطل أثناء البحث")
-        clear(search)
-        XCTAssertTrue(currentText(of: search).isEmpty, "حقل البحث لم يُمسح، فشرط إعادة الترتيب لن يتحقق")
-        XCTAssertTrue(edit.isEnabled, "زر التحرير لم يعد متاحاً بعد مسح البحث")
-        tap(chip("عام"), "صفحة عام لم تظهر")
-        tap(toggle, "مفتاح ترتيب الأولوية لم يظهر")
-        XCTAssertFalse(edit.isEnabled, "زر التحرير يجب أن يعود معطلاً بعد تفعيل ترتيب الأولوية")
+        XCTAssertFalse(edit.exists, "زر التحرير يجب إخفاؤه أثناء البحث، لا تعطيله")
+        tap(chip("عام"), "تعذر مسح البحث باختيار عام")
+        XCTAssertTrue(currentText(of: search).isEmpty, "اختيار عام يجب أن يمسح البحث")
+        dismissKeyboard()
+        appears(edit, "زر التحرير لم يعد بعد مسح البحث")
+        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يعود متاحاً بعد مسح البحث")
         XCTAssertEqual(edit.label, "تحرير", "نص زر التحرير يجب أن يكون عربياً")
+
+        if toggle.value as? String == "1" {
+            tap(toggle, "تعذر إيقاف ترتيب الأولوية قبل الدخول إلى التحرير")
+        }
+        XCTAssertEqual(toggle.value as? String, "0", "يجب إيقاف ترتيب الأولوية قبل الدخول إلى التحرير")
+        tap(edit, "تعذر الدخول إلى وضع التحرير")
+        XCTAssertEqual(edit.label, "تم", "يجب الدخول إلى وضع التحرير فعلاً")
+        tap(toggle, "تعذر تفعيل ترتيب الأولوية أثناء التحرير")
+        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يصبح مفعلاً")
+        let exitedEditing = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label == %@", "تحرير"),
+            object: edit
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [exitedEditing], timeout: 5), .completed,
+                       "تفعيل الترتيب بالأولوية يجب أن يُخرج من وضع التحرير حتى لا يُنقل عنصر خطأ")
     }
 
     func test04_PageLifecycle() {
@@ -184,6 +212,41 @@ final class CoreFlowsUITests: XCTestCase {
         disappears(row(title), "المهمة بقيت في اليومي بعد إزالتها")
         tap(chip("عام"), "تعذر الرجوع إلى عام")
         deleteTask(title)
+    }
+
+    func test07_EditButtonWorksInDefaultState() {
+        tap(chip("عام"), "صفحة عام لم تظهر")
+        setFilter("غير منجزة")
+        let toggle = priorityToggle()
+        if toggle.value as? String != "1" { toggle.tap() }
+        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يكون مفعلاً في الحالة الافتراضية")
+        defer {
+            if toggle.exists && toggle.value as? String != "1" { toggle.tap() }
+        }
+
+        let edit = app.buttons["editToggleButton"]
+        XCTAssertTrue(edit.exists, "زر التحرير يجب أن يظهر في الحالة الافتراضية")
+        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يكون متاحاً في الحالة الافتراضية — هذا هو الخطأ الذي أبلغ عنه المالك")
+        edit.tap()
+        XCTAssertTrue(app.staticTexts["sortDisabledNotice"].waitForExistence(timeout: 5), "تنبيه إيقاف ترتيب الأولوية لم يظهر")
+        XCTAssertEqual(toggle.value as? String, "0", "الدخول إلى التحرير يجب أن يوقف ترتيب الأولوية")
+        XCTAssertEqual(edit.label, "تم", "يجب الدخول إلى وضع التحرير فعلاً")
+        edit.tap()
+        XCTAssertEqual(edit.label, "تحرير", "يجب الخروج من وضع التحرير")
+    }
+
+    func test08_EditButtonHiddenInSearchAndDaily() {
+        tap(chip("عام"), "صفحة عام لم تظهر")
+        let search = app.textFields["searchField"]
+        tap(search, "حقل البحث لم يظهر")
+        search.typeText(unique("بحث اختبار"))
+        XCTAssertFalse(app.buttons["editToggleButton"].exists, "زر التحرير يجب أن يُخفى أثناء البحث")
+        tap(chip("عام"), "تعذر مسح البحث باختيار عام")
+        XCTAssertTrue(currentText(of: search).isEmpty, "اختيار الصفحة يجب أن يمسح البحث")
+        dismissKeyboard()
+        tap(element("pageChip-daily"), "كبسولة اليومي لم تظهر")
+        XCTAssertFalse(app.buttons["editToggleButton"].exists, "زر التحرير يجب أن يُخفى في اليومي")
+        tap(chip("عام"), "تعذر الرجوع إلى عام")
     }
 
     /// ملخّص خفيف: لا يمسح الشجرة كاملة ولا يطلب وصفها التشخيصي.
