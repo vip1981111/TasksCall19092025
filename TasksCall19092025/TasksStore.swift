@@ -29,6 +29,7 @@ final class TasksStore: ObservableObject {
             guard !isLoadingFromDisk else { return }
             save()
             if !isApplyingRemoteSync {
+                handleAttachmentChanges(from: oldValue)
                 hasPendingLocalChanges = true
                 syncToCloudDebounced()
             }
@@ -56,12 +57,23 @@ final class TasksStore: ObservableObject {
     let isUsingFallbackStorage: Bool
     private let fileURL: URL
     private var syncTask: Task<Void, Never>?
-    let cloudKit = CloudKitManager()
+    lazy var cloudKit = CloudKitManager()
+    let attachmentSync: AttachmentSyncManager
+    // عزل اختبارات الملفات عن Documents وتهيئة iCloud والإشعارات.
+    private let usesIsolatedStorage: Bool
 
-    init(filename: String = "tasks_pages.json") {
+    init(filename: String = "tasks_pages.json", storageDirectory isolatedDirectory: URL? = nil,
+         attachmentCloudStore: AttachmentCloudStore? = nil, attachmentDefaults: UserDefaults? = nil) {
+        let deferredCloud = DeferredAttachmentCloudStore()
+        let defaults = attachmentDefaults ?? (isolatedDirectory == nil ? .standard : UserDefaults(suiteName: "attachment-tests-\(UUID().uuidString)")!)
+        attachmentSync = AttachmentSyncManager(cloudStore: attachmentCloudStore ?? deferredCloud, defaults: defaults)
+        usesIsolatedStorage = isolatedDirectory != nil
         let fm = FileManager.default
         let storageDirectory: URL
-        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+        if let isolatedDirectory {
+            storageDirectory = isolatedDirectory
+            isUsingFallbackStorage = false
+        } else if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
             storageDirectory = docs
             isUsingFallbackStorage = false
         } else if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
@@ -94,11 +106,120 @@ final class TasksStore: ObservableObject {
             self.dailyReminderTime = Calendar.current.date(from: comps) ?? Date()
         }
         self.deleteAttachmentFilesOnRemove = UserDefaults.standard.object(forKey: "deleteAttachmentFilesOnRemove") as? Bool ?? false
+        if !usesIsolatedStorage {
+            deferredCloud.manager = { [weak self] in self?.cloudKit }
+        }
         load()
-        if notificationsEnabled {
+        if !usesIsolatedStorage { _ = cloudKit }
+        if notificationsEnabled && !usesIsolatedStorage {
             requestNotificationAuthorizationIfNeeded()
             scheduleDailyReminder(at: dailyReminderTime)
         }
+    }
+
+    // MARK: - مسارات المرفقات
+
+    /// مجلد المرفقات الحالي — يُحسب وقت التشغيل لأن مسار الحاوية يتغيّر.
+    var attachmentsDirectory: URL { fileURL.deletingLastPathComponent() }
+
+    /// يعتمد اسم الملف؛ يبقى fileURL في JSON للتوافق مع الإصدار 1.6.0.
+    func resolvedURL(for attachment: TaskAttachment) -> URL {
+        attachmentsDirectory.appendingPathComponent(attachment.fileName)
+    }
+
+    /// الملف الفارغ غير متاح للمعاينة.
+    func isAttachmentAvailable(_ attachment: TaskAttachment) -> Bool {
+        let url = resolvedURL(for: attachment)
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return size > 0
+    }
+
+    private func unusedAttachmentURL(named name: String) -> URL {
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = attachmentsDirectory.appendingPathComponent(name)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let uniqueName = ext.isEmpty ? "\(base)-\(suffix)" : "\(base)-\(suffix).\(ext)"
+            candidate = attachmentsDirectory.appendingPathComponent(uniqueName)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    func renameAttachmentOnDisk(_ oldURL: URL, to newFileName: String) -> URL? {
+        guard !newFileName.isEmpty, newFileName != ".", newFileName != "..",
+              (newFileName as NSString).lastPathComponent == newFileName else { return nil }
+        // الحذف السابق للوجهة كان يفقد ملف مرفق آخر؛ نختار اسماً غير مستخدم دائماً.
+        let destination = unusedAttachmentURL(named: newFileName)
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: destination)
+            return destination
+        } catch { return nil }
+    }
+
+    private func attachmentMap(in source: [TaskPage]) -> [UUID: TaskAttachment] {
+        Dictionary(source.flatMap { $0.tasks }.flatMap { $0.attachments }.map { ($0.id, $0) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
+    private func handleAttachmentChanges(from previous: [TaskPage]) {
+        guard !usesIsolatedStorage else { return }
+        let old = attachmentMap(in: previous)
+        let current = attachmentMap(in: pages)
+        // Task starts after the synchronous UI action, including optional local deletion.
+        Task {
+            for (id, attachment) in old where current[id] == nil {
+                guard attachmentMap(in: pages)[id] == nil else { continue }
+                await attachmentSync.deleteFromCloud(attachment)
+            }
+            for (id, attachment) in current where old[id] == nil {
+                guard let latest = attachmentMap(in: pages)[id] else { continue }
+                await attachmentSync.uploadIfNeeded(attachment, at: resolvedURL(for: latest))
+            }
+        }
+    }
+
+    private func relinkRenamedAttachments(previous: [TaskAttachment]) {
+        let old = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let current = attachmentMap(in: pages)
+        let referencedNames = Set(current.values.map(\.fileName))
+        let fm = FileManager.default
+        for attachment in current.values {
+            guard let prior = old[attachment.id], prior.fileName != attachment.fileName,
+                  (attachment.fileName as NSString).lastPathComponent == attachment.fileName,
+                  (prior.fileName as NSString).lastPathComponent == prior.fileName else { continue }
+            let source = resolvedURL(for: prior)
+            let destination = resolvedURL(for: attachment)
+            guard fm.fileExists(atPath: source.path), !fm.fileExists(atPath: destination.path) else { continue }
+            do {
+                // Shared filenames must retain the original for other attachments.
+                if referencedNames.contains(prior.fileName) { try fm.copyItem(at: source, to: destination) }
+                else { try fm.moveItem(at: source, to: destination) }
+            } catch { /* Preserve the original; the missing destination can be downloaded. */ }
+        }
+    }
+
+    private func synchronizeAttachmentFiles() async {
+        guard !usesIsolatedStorage, cloudKit.syncEnabled && cloudKit.iCloudAvailable else { return }
+        // Re-read live data between awaits to avoid uploading attachments removed during a transfer.
+        for id in attachmentMap(in: pages).keys {
+            guard let attachment = attachmentMap(in: pages)[id] else { continue }
+            let url = resolvedURL(for: attachment)
+            if FileManager.default.fileExists(atPath: url.path) {
+                await attachmentSync.syncPendingUploads([(attachment, url)])
+            }
+        }
+        for id in attachmentMap(in: pages).keys {
+            guard let attachment = attachmentMap(in: pages)[id] else { continue }
+            let url = resolvedURL(for: attachment)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                _ = await attachmentSync.ensureLocalFile(for: attachment, at: url)
+            }
+        }
+        // Never reconcile a whole private database from a potentially stale device snapshot.
+        // Orphaned local files remain available for explicit manual cleanup.
     }
 
     // MARK: - تحميل وحفظ البيانات
@@ -745,7 +866,7 @@ final class TasksStore: ObservableObject {
         for page in pages {
             for task in page.tasks {
                 for att in task.attachments {
-                    let src = att.fileURL
+                    let src = resolvedURL(for: att)
                     guard fm.fileExists(atPath: src.path) else { continue }
                     guard let fileSize = try? fm.attributesOfItem(atPath: src.path)[.size] as? Int64, fileSize > 0 else { continue }
 
@@ -824,26 +945,16 @@ final class TasksStore: ObservableObject {
             let data = try Data(contentsOf: jsonURL)
             let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
 
-            guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
-                throw NSError(domain: "import", code: -4, userInfo: [NSLocalizedDescriptionKey: "تعذر الوصول لمجلد المستندات"])
-            }
             let attachmentsSrc = destRoot.appendingPathComponent("Attachments")
-
+            var importedURLs: [String: URL] = [:]
             if fm.fileExists(atPath: attachmentsSrc.path) {
-                if let srcFiles = try? fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil) {
-                    for srcFile in srcFiles {
-                        var isDir: ObjCBool = false
-                        if fm.fileExists(atPath: srcFile.path, isDirectory: &isDir), isDir.boolValue { continue }
-                        let dest = docs.appendingPathComponent(srcFile.lastPathComponent)
-                        if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
-                        do {
-                            try fm.copyItem(at: srcFile, to: dest)
-                        } catch {
-                            if let fileData = try? Data(contentsOf: srcFile) {
-                                try? fileData.write(to: dest, options: .atomic)
-                            }
-                        }
-                    }
+                let srcFiles = try fm.contentsOfDirectory(at: attachmentsSrc, includingPropertiesForKeys: nil)
+                for srcFile in srcFiles {
+                    var isDir: ObjCBool = false
+                    if fm.fileExists(atPath: srcFile.path, isDirectory: &isDir), isDir.boolValue { continue }
+                    let dest = unusedAttachmentURL(named: srcFile.lastPathComponent)
+                    try fm.copyItem(at: srcFile, to: dest)
+                    importedURLs[srcFile.lastPathComponent] = dest
                 }
             }
 
@@ -853,7 +964,8 @@ final class TasksStore: ObservableObject {
                 for taskIndex in updatedPages[pageIndex].tasks.indices {
                     for attIndex in updatedPages[pageIndex].tasks[taskIndex].attachments.indices {
                         let fileName = updatedPages[pageIndex].tasks[taskIndex].attachments[attIndex].fileName
-                        let newURL = docs.appendingPathComponent(fileName)
+                        let newURL = importedURLs[fileName] ?? attachmentsDirectory.appendingPathComponent(fileName)
+                        updatedPages[pageIndex].tasks[taskIndex].attachments[attIndex].fileName = newURL.lastPathComponent
                         updatedPages[pageIndex].tasks[taskIndex].attachments[attIndex].fileURL = newURL
                     }
                 }
@@ -871,15 +983,13 @@ final class TasksStore: ObservableObject {
 
     func cleanUnusedAttachments() -> (deletedCount: Int, freedSpace: Int64) {
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return (0, 0)
-        }
+        let docs = attachmentsDirectory
 
         var usedFileNames = Set<String>()
         for page in pages {
             for task in page.tasks {
                 for attachment in task.attachments {
-                    usedFileNames.insert(attachment.fileURL.lastPathComponent)
+                    usedFileNames.insert(attachment.fileName)
                 }
             }
         }
@@ -901,6 +1011,7 @@ final class TasksStore: ObservableObject {
         for fileURL in allFiles {
             if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, isDirectory { continue }
             let fileName = fileURL.lastPathComponent
+            guard !usedFileNames.contains(fileName) else { continue }
             if fileName == "tasks_pages.json" { continue }
             // تجاهل الملفات التي ليست بامتدادات مرفقات معروفة
             let ext = fileURL.pathExtension.lowercased()
@@ -925,13 +1036,13 @@ final class TasksStore: ObservableObject {
 
     func countUnusedAttachments() -> Int {
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return 0 }
+        let docs = attachmentsDirectory
 
         var usedFileNames = Set<String>()
         for page in pages {
             for task in page.tasks {
                 for attachment in task.attachments {
-                    usedFileNames.insert(attachment.fileURL.lastPathComponent)
+                    usedFileNames.insert(attachment.fileName)
                 }
             }
         }
@@ -948,6 +1059,7 @@ final class TasksStore: ObservableObject {
         for fileURL in allFiles {
             if let isDirectory = try? fileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory, isDirectory { continue }
             let fileName = fileURL.lastPathComponent
+            guard !usedFileNames.contains(fileName) else { continue }
             if fileName == "tasks_pages.json" { continue }
             let ext = fileURL.pathExtension.lowercased()
             if !attachmentExtensions.contains(ext) { continue }
@@ -961,7 +1073,7 @@ final class TasksStore: ObservableObject {
 
     /// مزامنة مؤجلة — تنتظر 3 ثوانٍ بعد آخر تغيير قبل الرفع
     private func syncToCloudDebounced() {
-        guard cloudKit.syncEnabled, !isSyncInProgress, !isApplyingRemoteSync, hasPendingLocalChanges else { return }
+        guard !usesIsolatedStorage, cloudKit.syncEnabled, !isSyncInProgress, !isApplyingRemoteSync, hasPendingLocalChanges else { return }
         syncTask?.cancel()
         syncTask = Task {
             try? await Task.sleep(for: .seconds(3))
@@ -1021,6 +1133,7 @@ final class TasksStore: ObservableObject {
             await cloudKit.upload(data: localBackup)
         }
 
+        await synchronizeAttachmentFiles()
         NSLog("☁️ syncNow completed ✅")
     }
 
@@ -1050,6 +1163,7 @@ final class TasksStore: ObservableObject {
                    taskA.notes != taskB.notes ||
                    taskA.recurrence != taskB.recurrence ||
                    taskA.dueDate != taskB.dueDate ||
+                   taskA.attachments != taskB.attachments ||
                    taskA.steps.count != taskB.steps.count ||
                    taskA.modifiedAt != taskB.modifiedAt {
                     return false
@@ -1269,8 +1383,11 @@ final class TasksStore: ObservableObject {
         // نستخدم pages = العادية لضمان إطلاق objectWillChange وتحديث الـ Bindings
         // isApplyingRemoteSync يمنع الـ sync loop
         isApplyingRemoteSync = true
+        let previousAttachments = pages.flatMap { $0.tasks }.flatMap { $0.attachments }
         pages = backup.pages
+        relinkRenamedAttachments(previous: previousAttachments)
         isApplyingRemoteSync = false
+        Task { await synchronizeAttachmentFiles() }
     }
 }
 

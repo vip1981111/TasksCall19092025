@@ -28,6 +28,8 @@ struct TaskDetailView: View {
     @State private var isDocumentScannerPresented: Bool = false
     @State private var previewURLs: [URL] = []
     @State private var showPreview: Bool = false
+    @State private var attachmentStates: [UUID: AttachmentSyncState] = [:]
+    @State private var attachmentOpenFailures: [UUID: String] = [:]
     @State private var renamingAttachment: TaskAttachment? = nil
     @State private var renameAttachmentText: String = ""
     @State private var showRenameAttachmentAlert: Bool = false
@@ -98,6 +100,7 @@ struct TaskDetailView: View {
                     .padding()
             }
         }
+        .onReceive(store.attachmentSync.$states) { attachmentStates = $0 }
         .navigationTitle("تفاصيل المهمة")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -140,10 +143,10 @@ struct TaskDetailView: View {
                    let idx = task.attachments.firstIndex(where: { $0.id == target.id }) {
                     let newNameRaw = renameAttachmentText.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !newNameRaw.isEmpty else { return }
-                    let currentExt = task.attachments[idx].fileURL.pathExtension
+                    let currentExt = (task.attachments[idx].fileName as NSString).pathExtension
                     let hasDot = (newNameRaw as NSString).pathExtension.isEmpty == false
                     let finalName = hasDot ? newNameRaw : (currentExt.isEmpty ? newNameRaw : "\(newNameRaw).\(currentExt)")
-                    if let newURL = renameAttachmentOnDisk(task.attachments[idx].fileURL, to: finalName) {
+                    if let newURL = store.renameAttachmentOnDisk(store.resolvedURL(for: task.attachments[idx]), to: finalName) {
                         updateTask { t in
                             t.attachments[idx].fileURL = newURL
                             t.attachments[idx].fileName = newURL.lastPathComponent
@@ -696,7 +699,8 @@ struct TaskDetailView: View {
     // MARK: - Attachments Section
 
     private var attachmentsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let _ = attachmentStates
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("المرفقات", systemImage: "paperclip").font(.headline)
                 Spacer()
@@ -713,12 +717,15 @@ struct TaskDetailView: View {
             } else {
                 ForEach(task.attachments) { att in
                     HStack {
-                        Image(systemName: iconForAttachment(att.kind)).foregroundStyle(.secondary)
+                        Image(systemName: iconForAttachment(att.kind)).foregroundStyle(themeManager.currentTheme.secondaryTextColor)
                         Text(att.fileName).lineLimit(2).multilineTextAlignment(.trailing)
+                        attachmentStatus(att)
                         Spacer()
                         Menu {
-                            Button { previewURLs = [att.fileURL]; showPreview = true } label: { Label("معاينة", systemImage: "eye") }
-                            ShareLink(item: att.fileURL) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+                            Button { openAttachment(att) } label: { Label("معاينة", systemImage: "eye") }
+                            if store.isAttachmentAvailable(att) {
+                                ShareLink(item: store.resolvedURL(for: att)) { Label("مشاركة", systemImage: "square.and.arrow.up") }
+                            }
                             Button {
                                 renamingAttachment = att
                                 renameAttachmentText = att.fileName
@@ -731,7 +738,7 @@ struct TaskDetailView: View {
                         } label: { Image(systemName: "ellipsis.circle") }
                     }
                     .contentShape(Rectangle())
-                    .onTapGesture { previewURLs = [att.fileURL]; showPreview = true }
+                    .onTapGesture { openAttachment(att) }
                     .padding(8)
                     .background(Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -741,11 +748,62 @@ struct TaskDetailView: View {
         .padding(.horizontal)
     }
 
+    @ViewBuilder
+    private func attachmentStatus(_ att: TaskAttachment) -> some View {
+        let state = attachmentOpenFailures[att.id].map { AttachmentSyncState.failed($0) }
+            ?? store.attachmentSync.state(for: att)
+        if state != .available {
+            HStack(spacing: 4) {
+                switch state {
+                case .uploading:
+                    ProgressView().controlSize(.mini)
+                    Text("جارٍ الرفع")
+                case .downloading:
+                    ProgressView().controlSize(.mini)
+                    Text("جارٍ التنزيل")
+                case .missing:
+                    Label("اضغط للتنزيل", systemImage: "icloud.and.arrow.down")
+                case .failed(let reason):
+                    Label(reason, systemImage: "exclamationmark.triangle")
+                    Button("إعادة المحاولة") {
+                        attachmentOpenFailures[att.id] = nil
+                        Task { await store.attachmentSync.retry(att, at: store.resolvedURL(for: att)) }
+                    }
+                    .accessibilityIdentifier("attachmentRetry-\(att.fileName)")
+                case .available:
+                    EmptyView()
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(themeManager.currentTheme.secondaryTextColor)
+            .tint(themeManager.currentTheme.accentColor)
+            .accessibilityIdentifier("attachmentState-\(att.fileName)")
+        }
+    }
+
+    private func openAttachment(_ att: TaskAttachment) {
+        attachmentOpenFailures[att.id] = nil
+        Task { @MainActor in
+            if !store.isAttachmentAvailable(att) {
+                guard await store.attachmentSync.ensureLocalFile(for: att, at: store.resolvedURL(for: att)) else {
+                    attachmentOpenFailures[att.id] = "تعذّر تنزيل المرفق؛ أعد المحاولة"
+                    return
+                }
+            }
+            guard store.isAttachmentAvailable(att) else {
+                attachmentOpenFailures[att.id] = "ملف المرفق غير متاح؛ أعد المحاولة"
+                return
+            }
+            previewURLs = [store.resolvedURL(for: att)]
+            showPreview = true
+        }
+    }
+
     private func addAttachment(from sourceURL: URL) {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
         let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let docs = store.attachmentsDirectory
         let ext = sourceURL.pathExtension
         let base = sourceURL.deletingPathExtension().lastPathComponent
         let uniqueName = base.isEmpty
@@ -771,8 +829,7 @@ struct TaskDetailView: View {
     }
 
     private func addImageAttachment(data: Data, suggestedName: String) {
-        let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let docs = store.attachmentsDirectory
         let ext = (suggestedName as NSString).pathExtension.lowercased()
         let finalExt = ["jpg","jpeg","png","heic"].contains(ext) ? ext : "jpg"
         let base = (suggestedName as NSString).deletingPathExtension
@@ -781,7 +838,7 @@ struct TaskDetailView: View {
         do {
             try data.write(to: url, options: .atomic)
             updateTask { t in
-                t.attachments.append(TaskAttachment(fileName: uniqueName, fileURL: url, kind: .image))
+                t.attachments.append(TaskAttachment(fileName: url.lastPathComponent, fileURL: url, kind: .image))
             }
         } catch {
             #if DEBUG
@@ -884,7 +941,7 @@ struct TaskDetailView: View {
         updateTask { t in
             t.attachments.removeAll { $0.id == att.id }
         }
-        if store.deleteAttachmentFilesOnRemove { store.removeAttachmentFile(at: att.fileURL) }
+        if store.deleteAttachmentFilesOnRemove { store.removeAttachmentFile(at: store.resolvedURL(for: att)) }
     }
 
     private func kindForFileExtension(_ ext: String) -> AttachmentKind {
@@ -893,17 +950,6 @@ struct TaskDetailView: View {
         if ["m4a","mp3","wav","aac"].contains(e) { return .audio }
         if ["pdf","doc","docx","ppt","pptx","xls","xlsx","txt","rtf"].contains(e) { return .document }
         return .other
-    }
-
-    private func renameAttachmentOnDisk(_ oldURL: URL, to newFileName: String) -> URL? {
-        let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
-        let newURL = docs.appendingPathComponent(newFileName)
-        do {
-            if fm.fileExists(atPath: newURL.path) { try fm.removeItem(at: newURL) }
-            try fm.moveItem(at: oldURL, to: newURL)
-            return newURL
-        } catch { return nil }
     }
 
     private func iconForAttachment(_ kind: AttachmentKind) -> String {
