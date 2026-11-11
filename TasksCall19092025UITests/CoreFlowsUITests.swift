@@ -134,22 +134,18 @@ final class CoreFlowsUITests: XCTestCase {
         dismissKeyboard()
         appears(edit, "زر التحرير لم يعد بعد مسح البحث")
         XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يعود متاحاً بعد مسح البحث")
-        XCTAssertEqual(edit.label, "تحرير", "نص زر التحرير يجب أن يكون عربياً")
+        addTask(unique("مقبض اختبار"))
 
         if toggle.value as? String == "1" {
             tap(toggle, "تعذر إيقاف ترتيب الأولوية قبل الدخول إلى التحرير")
         }
         XCTAssertEqual(toggle.value as? String, "0", "يجب إيقاف ترتيب الأولوية قبل الدخول إلى التحرير")
         tap(edit, "تعذر الدخول إلى وضع التحرير")
-        XCTAssertEqual(edit.label, "تم", "يجب الدخول إلى وضع التحرير فعلاً")
+        XCTAssertGreaterThan(reorderHandleCount(), 0, "مقابض السحب لم تظهر بعد الدخول إلى التحرير")
         tap(toggle, "تعذر تفعيل ترتيب الأولوية أثناء التحرير")
         XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يصبح مفعلاً")
-        let exitedEditing = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND label == %@", "تحرير"),
-            object: edit
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [exitedEditing], timeout: 5), .completed,
-                       "تفعيل الترتيب بالأولوية يجب أن يُخرج من وضع التحرير حتى لا يُنقل عنصر خطأ")
+        XCTAssertEqual(reorderHandleCount(), 0,
+                       "تفعيل الترتيب بالأولوية يجب أن يُخرج من وضع التحرير ويخفي المقابض")
     }
 
     func test04_PageLifecycle() {
@@ -215,24 +211,19 @@ final class CoreFlowsUITests: XCTestCase {
     }
 
     func test07_EditButtonWorksInDefaultState() {
-        tap(chip("عام"), "صفحة عام لم تظهر")
-        setFilter("غير منجزة")
-        let toggle = priorityToggle()
-        if toggle.value as? String != "1" { toggle.tap() }
-        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يكون مفعلاً في الحالة الافتراضية")
-        defer {
-            if toggle.exists && toggle.value as? String != "1" { toggle.tap() }
-        }
-
+        prepareDefaultReorderState()
+        defer { restoreReorderState() }
+        let titles = [unique("أ"), unique("ب"), unique("ج")]
+        titles.forEach { addTask($0) }
         let edit = app.buttons["editToggleButton"]
         XCTAssertTrue(edit.exists, "زر التحرير يجب أن يظهر في الحالة الافتراضية")
-        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يكون متاحاً في الحالة الافتراضية — هذا هو الخطأ الذي أبلغ عنه المالك")
-        edit.tap()
+        XCTAssertTrue(edit.isEnabled, "زر التحرير يجب أن يكون متاحاً في الحالة الافتراضية")
+        tap(edit, "تعذر الدخول إلى التحرير")
         XCTAssertTrue(app.staticTexts["sortDisabledNotice"].waitForExistence(timeout: 5), "تنبيه إيقاف ترتيب الأولوية لم يظهر")
-        XCTAssertEqual(toggle.value as? String, "0", "الدخول إلى التحرير يجب أن يوقف ترتيب الأولوية")
-        XCTAssertEqual(edit.label, "تم", "يجب الدخول إلى وضع التحرير فعلاً")
-        edit.tap()
-        XCTAssertEqual(edit.label, "تحرير", "يجب الخروج من وضع التحرير")
+        XCTAssertEqual(priorityToggle().value as? String, "0", "الدخول إلى التحرير يجب أن يوقف ترتيب الأولوية")
+        assertActualReorder(titles)
+        tap(edit, "تعذر الخروج من التحرير")
+        XCTAssertEqual(reorderHandleCount(), 0, "المقابض بقيت بعد الخروج من التحرير")
     }
 
     func test08_EditButtonHiddenInSearchAndDaily() {
@@ -247,6 +238,180 @@ final class CoreFlowsUITests: XCTestCase {
         tap(element("pageChip-daily"), "كبسولة اليومي لم تظهر")
         XCTAssertFalse(app.buttons["editToggleButton"].exists, "زر التحرير يجب أن يُخفى في اليومي")
         tap(chip("عام"), "تعذر الرجوع إلى عام")
+    }
+
+    func test09_EditModeActuallyReordersRows() {
+        prepareDefaultReorderState()
+        defer { restoreReorderState() }
+        let titles = [unique("أ"), unique("ب"), unique("ج")]
+        titles.forEach { addTask($0) }
+        tap(app.buttons["editToggleButton"], "تعذر الدخول إلى التحرير")
+        XCTAssertGreaterThanOrEqual(reorderHandleCount(), 3,
+            "مقابض السحب غير موجودة في شجرة العناصر\n\(screenSummary("وضع-التحرير"))")
+        attachScreenshot("edit-mode-handles")
+        assertActualReorder(titles, screenshot: "after-reorder")
+    }
+
+    func test10_ReorderSurvivesRelaunch() {
+        prepareDefaultReorderState()
+        defer { restoreReorderState() }
+        let titles = [unique("أ"), unique("ب"), unique("ج")]
+        titles.forEach { addTask($0) }
+        tap(app.buttons["editToggleButton"], "تعذر الدخول إلى التحرير")
+        XCTAssertGreaterThanOrEqual(reorderHandleCount(), 3, "مقابض السحب لم تظهر")
+        let after = assertActualReorder(titles)
+        tap(app.buttons["editToggleButton"], "تعذر الخروج من التحرير")
+        app.terminate()
+        app.launch()
+        selectAllFolders()
+        tap(chip("عام"), "تعذر فتح عام بعد إعادة التشغيل")
+        setFilter("غير منجزة")
+        let toggle = priorityToggle()
+        if toggle.value as? String != "0" { tap(toggle, "تعذر إيقاف ترتيب الأولوية") }
+        XCTAssertEqual(toggle.value as? String, "0", "العرض يجب أن يتبع ترتيب المصفوفة")
+        let relaunched = visibleRowTitles().filter { titles.contains($0) }
+        let expected = after.filter { titles.contains($0) }
+        XCTAssertEqual(expected.count, 3, "الترتيب المحفوظ لا يتضمن المهام الثلاث: \(after)")
+        XCTAssertEqual(relaunched, expected,
+            "الترتيب لم يبق بعد إعادة التشغيل\nبعد السحب: \(expected)\nبعد التشغيل: \(relaunched)")
+    }
+
+    func test11_ReorderUnderOtherFilters() {
+        prepareDefaultReorderState()
+        defer { restoreReorderState() }
+        let pending = [unique("غير منجزة أ"), unique("غير منجزة ب")]
+        let completed = [unique("منجزة أ"), unique("منجزة ب")]
+        let titles = pending + completed
+        titles.forEach { addTask($0) }
+        for title in completed {
+            tap(app.buttons["taskDoneToggle-\(title)"], "تعذر إنجاز مهمة الاختبار")
+        }
+        setFilter("الكل")
+        tap(app.buttons["editToggleButton"], "تعذر تحرير فلتر الكل")
+        let afterAll = assertActualReorder(titles)
+        let pendingBefore = afterAll.filter { pending.contains($0) }
+        XCTAssertEqual(pendingBefore.count, 2, "المهمتان غير المنجزتين لم تظهرا")
+        tap(app.buttons["editToggleButton"], "تعذر إنهاء تحرير الكل")
+        setFilter("منجزة")
+        tap(app.buttons["editToggleButton"], "تعذر تحرير فلتر منجزة")
+        assertActualReorder(completed)
+        tap(app.buttons["editToggleButton"], "تعذر إنهاء تحرير المنجزة")
+        setFilter("الكل")
+        let pendingAfter = visibleRowTitles().filter { pending.contains($0) }
+        XCTAssertEqual(pendingAfter, pendingBefore,
+            "سحب المنجزة غيّر الترتيب النسبي للمهام المخفية\nقبل: \(pendingBefore)\nبعد: \(pendingAfter)")
+    }
+
+    func test12_SwipeAndCompleteWorkAfterEditMode() {
+        prepareDefaultReorderState()
+        defer { restoreReorderState() }
+        tap(app.buttons["editToggleButton"], "تعذر الدخول إلى التحرير")
+        tap(app.buttons["editToggleButton"], "تعذر الخروج بالضغط على تم")
+        let title = unique("إنجاز وحذف بعد التحرير")
+        addTask(title)
+        tap(app.buttons["taskDoneToggle-\(title)"], "تعذر الإنجاز بعد التحرير")
+        disappears(row(title), "المهمة المنجزة بقيت في غير منجزة")
+        setFilter("منجزة")
+        appears(row(title), "المهمة لم تنتقل إلى منجزة")
+        tap(app.buttons["taskDoneToggle-\(title)"], "تعذر إعادة المهمة إلى غير منجزة")
+        disappears(row(title), "المهمة بقيت في منجزة بعد إلغاء الإنجاز")
+        setFilter("غير منجزة")
+        appears(row(title), "المهمة لم تعد إلى غير منجزة")
+        deleteTask(title)
+        setFilter("الكل")
+        disappears(row(title), "المهمة المحذوفة ما زالت موجودة في الكل")
+    }
+
+    private func prepareDefaultReorderState() {
+        tap(chip("عام"), "صفحة عام لم تظهر")
+        setFilter("غير منجزة")
+        let toggle = priorityToggle()
+        if toggle.value as? String != "1" { tap(toggle, "تعذر تشغيل ترتيب الأولوية") }
+        XCTAssertEqual(toggle.value as? String, "1", "ترتيب الأولوية يجب أن يكون مفعلاً في الحالة الافتراضية")
+    }
+
+    private func restoreReorderState() {
+        if reorderHandleCount() > 0 {
+            tap(app.buttons["editToggleButton"], "تعذر الخروج من التحرير للتنظيف")
+        }
+        let toggle = priorityToggle()
+        if toggle.value as? String != "1" { tap(toggle, "تعذر إعادة تشغيل ترتيب الأولوية للتنظيف") }
+        setFilter("غير منجزة")
+    }
+
+    private func attachScreenshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @discardableResult
+    private func assertActualReorder(_ titles: [String], screenshot: String? = nil,
+                                     file: StaticString = #filePath, line: UInt = #line) -> [String] {
+        let before = visibleRowTitles()
+        let shown = before.filter { titles.contains($0) }
+        guard shown.count == titles.count, let firstShown = shown.first,
+              let lastShown = shown.last, firstShown != lastShown else {
+            XCTFail("مهام السحب لم تظهر كاملة\nقبل: \(before)", file: file, line: line)
+            return before
+        }
+        let after = dragRow(firstShown, below: lastShown)
+        if let screenshot = screenshot { attachScreenshot(screenshot) }
+        XCTAssertEqual(after.filter { titles.contains($0) }.count, titles.count,
+                       "بعض المهام اختفت بعد السحب\nقبل: \(before)\nبعد: \(after)", file: file, line: line)
+        guard let a = after.firstIndex(of: firstShown), let b = after.firstIndex(of: lastShown) else {
+            XCTFail("المهام اختفت بعد السحب\nقبل: \(before)\nبعد: \(after)", file: file, line: line)
+            return after
+        }
+        XCTAssertGreaterThan(a, b, "السحب لم يغيّر الترتيب\nقبل: \(before)\nبعد: \(after)", file: file, line: line)
+        return after
+    }
+
+    /// مقبض السحب داخل صف — ثبت معرّفه ولصيقته بالتشغيل.
+    private func reorderHandle(in cellIndex: Int) -> XCUIElement {
+        let cell = app.cells.element(boundBy: cellIndex)
+        let byID = cell.images["line.horizontal.3"]
+        if byID.exists { return byID }
+        return cell.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "إعادة ترتيب")
+        ).firstMatch
+    }
+
+    private func reorderHandleCount() -> Int {
+        var total = 0
+        let cells = app.cells
+        for index in 0..<min(cells.count, 10) where reorderHandle(in: index).exists { total += 1 }
+        return total
+    }
+
+    private func cellIndex(of title: String) -> Int? {
+        visibleRowTitles().firstIndex(of: title)
+    }
+
+    @discardableResult
+    private func dragRow(_ title: String, below target: String) -> [String] {
+        guard let from = cellIndex(of: title), let to = cellIndex(of: target) else { return visibleRowTitles() }
+        let handle = reorderHandle(in: from)
+        guard handle.exists else { return visibleRowTitles() }
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let destination = app.cells.element(boundBy: to)
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.9))
+        start.press(forDuration: 1.0, thenDragTo: destination,
+                    withVelocity: .slow, thenHoldForDuration: 0.8)
+        return visibleRowTitles()
+    }
+
+    /// عناوين الصفوف المعروضة بترتيب العرض — أساس كل تأكيدات السحب
+    private func visibleRowTitles(limit: Int = 10) -> [String] {
+        let cells = app.cells
+        let count = min(cells.count, limit)
+        var titles: [String] = []
+        for index in 0..<count {
+            let label = cells.element(boundBy: index).staticTexts.firstMatch.label
+            if !label.isEmpty { titles.append(label) }
+        }
+        return titles
     }
 
     /// ملخّص خفيف: لا يمسح الشجرة كاملة ولا يطلب وصفها التشخيصي.
