@@ -322,6 +322,53 @@ final class CoreFlowsUITests: XCTestCase {
         disappears(row(title), "المهمة المحذوفة ما زالت موجودة في الكل")
     }
 
+    // لا يغطي مرفقاً حقيقياً من منتقي الملفات أو التنزيل الفعلي من iCloud:
+    // نفتح المنتقي ونلغيه فقط لتجنب ملفات المستخدم وحسابه وأي اتصال شبكي.
+    // فحص النص يتم عند نقاط الانتقال وفي فترة مراقبة أخيرة؛ لا يثبت غيابه في كل إطار رسم.
+    func test13_AttachmentPreviewNeverOpensEmpty() {
+        let title = unique("اختبار المرفقات")
+        addTask(title) // يُسجّل للتنظيف في tearDownWithError حتى عند فشل الاختبار.
+        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"]
+        XCTAssertFalse(emptyPreview.exists)
+        tap(row(title).staticTexts[title], "تعذر فتح تفاصيل المهمة")
+        appears(app.navigationBars["تفاصيل المهمة"], "شاشة التفاصيل لم تظهر")
+        XCTAssertFalse(emptyPreview.exists)
+
+        let attachments = app.staticTexts["المرفقات"]
+        for _ in 0..<6 {
+            XCTAssertFalse(emptyPreview.exists)
+            if attachments.exists && attachments.isHittable { break }
+            app.swipeUp()
+        }
+        appears(attachments, "قسم المرفقات لم يظهر")
+        XCTAssertTrue(attachments.isHittable, "قسم المرفقات غير ظاهر على الشاشة")
+        appears(app.staticTexts["لا توجد مرفقات"], "المهمة الجديدة يجب ألا تحتوي مرفقات")
+        XCTAssertFalse(emptyPreview.exists)
+        // إضافة الخطوات معطّلة ما دام عنوان الخطوة فارغاً؛ القائمة المفعّلة تخص المرفقات.
+        let addAttachment = app.buttons.matching(NSPredicate(format: "label == %@ AND enabled == true", "إضافة")).firstMatch
+        tap(addAttachment, "قائمة إضافة المرفق لم تظهر")
+        XCTAssertFalse(emptyPreview.exists)
+        tap(app.buttons["مستند/ملف"], "خيار منتقي الملفات لم يظهر")
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["إلغاء", "Cancel"])).firstMatch
+        appears(cancel, "منتقي الملفات لم يُظهر زر الإلغاء")
+        XCTAssertFalse(emptyPreview.exists)
+        tap(cancel, "تعذر إلغاء منتقي الملفات")
+        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد الإلغاء")
+        appears(app.staticTexts["لا توجد مرفقات"], "الإلغاء غيّر قائمة المرفقات")
+        XCTAssertFalse(emptyPreview.exists)
+        let forbidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: emptyPreview)
+        forbidden.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [forbidden], timeout: 1), .completed,
+                       "ظهرت معاينة فارغة بعد إلغاء المنتقي")
+        // العودة عبر إعادة التشغيل، ثم حذف المهمة عبر نفس مسار التنظيف الموجود.
+        app.terminate()
+        app.launch()
+        selectAllFolders()
+        tap(chip("عام"), "تعذر العودة إلى عام للتنظيف")
+        setFilter("الكل")
+        deleteTask(title)
+    }
+
     private func prepareDefaultReorderState() {
         tap(chip("عام"), "صفحة عام لم تظهر")
         setFilter("غير منجزة")
