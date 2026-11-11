@@ -20,7 +20,8 @@ struct ContentView: View {
     @State private var searchText: String = ""
     @State private var filter: TasksFilter = .active
     @State private var defaultPriorityForNewTask: TaskPriority = .medium
-    @State private var sortByPriority: Bool = true
+    @AppStorage("sortByPriority") private var sortByPriority: Bool = true
+    @State private var sortDisabledNotice: Bool = false
     @State private var showPriorityPickerForNew: Bool = false
     @State private var isAddingPage: Bool = false
     @State private var newPageName: String = ""
@@ -53,12 +54,15 @@ struct ContentView: View {
         return store.pages.first(where: { $0.id == id })
     }
 
-    /// الترتيب اليدوي صحيح فقط حين تكون القائمة المعروضة هي ترتيب الصفحة الخام
-    private var canReorderTasks: Bool {
+    /// الترتيب اليدوي غير ممكن في اليومي ولا أثناء البحث — نُخفي الزر لا نعطّله
+    private var isReorderAvailable: Bool {
         guard let page = currentPage, !page.isDaily else { return false }
-        return filter == .all
-            && !sortByPriority
-            && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// النقل الفعلي مسموح فقط حين يطابق ترتيب العرض ترتيب المصفوفة
+    private var canReorderTasks: Bool {
+        isReorderAvailable && !sortByPriority
     }
 
     private var currentPageIndex: Int? {
@@ -174,10 +178,11 @@ struct ContentView: View {
                                 }
                             }
                             .onMove { indices, newOffset in
-                                guard canReorderTasks else { return }
-                                if let page = currentPage, !page.isDaily, let pageID = currentPage?.id {
-                                    store.moveTasks(in: pageID, from: indices, to: newOffset)
-                                }
+                                guard canReorderTasks, let pageID = currentPage?.id else { return }
+                                store.moveTasks(in: pageID,
+                                                visibleIDs: precomputedFilteredIDs.map(\.id),
+                                                from: indices,
+                                                to: newOffset)
                             }
                         }
                         .listStyle(.plain)
@@ -243,19 +248,44 @@ struct ContentView: View {
                     .accessibilityLabel("إضافة مهمة جديدة")
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                ZStack(alignment: .top) {
+                    if sortDisabledNotice {
+                        Text("أُوقف الترتيب بالأولوية لتتمكن من الترتيب يدوياً")
+                            .font(.footnote)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(themeManager.currentTheme.cardBackground)
+                            .foregroundStyle(themeManager.currentTheme.primaryTextColor)
+                            .clipShape(Capsule())
+                            .shadow(color: themeManager.currentTheme.primaryTextColor.opacity(0.15), radius: 6, y: 2)
+                            .padding(.top, 8)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .accessibilityIdentifier("sortDisabledNotice")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+                .allowsHitTesting(false)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { isShowingSettings = true } label: { Image(systemName: "gearshape").font(.title3) }
                         .accessibilityLabel("الإعدادات")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(editMode?.wrappedValue.isEditing == true ? "تم" : "تحرير") {
-                        withAnimation {
-                            editMode?.wrappedValue = editMode?.wrappedValue.isEditing == true ? .inactive : .active
+                    if isReorderAvailable {
+                        Button(editMode?.wrappedValue.isEditing == true ? "تم" : "تحرير") {
+                            if editMode?.wrappedValue.isEditing == true {
+                                withAnimation { editMode?.wrappedValue = .inactive }
+                                return
+                            }
+                            if sortByPriority {
+                                sortByPriority = false
+                                showSortDisabledNotice()
+                            }
+                            withAnimation { editMode?.wrappedValue = .active }
                         }
+                        .accessibilityIdentifier("editToggleButton")
                     }
-                    .disabled(!canReorderTasks)
-                    .accessibilityIdentifier("editToggleButton")
                 }
                 ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("تم") { isTextFieldFocused = false } }
             }
@@ -743,6 +773,14 @@ struct ContentView: View {
     }
 
     // MARK: - Helpers
+
+    private func showSortDisabledNotice() {
+        withAnimation { sortDisabledNotice = true }
+        Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            withAnimation { sortDisabledNotice = false }
+        }
+    }
 
     private func selectFolder(_ folder: String?) {
         selectedFolderRaw = folder ?? ""

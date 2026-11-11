@@ -429,6 +429,25 @@ final class TasksStore: ObservableObject {
         withAnimation { pages[i].tasks.move(fromOffsets: source, toOffset: destination) }
     }
 
+    /// إعادة ترتيب المهام الظاهرة فقط داخل صفحة، مع إبقاء المهام المخفية في مواضعها.
+    /// `visibleIDs` هي معرّفات الصفوف المعروضة بترتيب العرض نفسه.
+    func moveTasks(in pageID: UUID, visibleIDs: [UUID], from source: IndexSet, to destination: Int) {
+        guard let pageIndex = pages.firstIndex(where: { $0.id == pageID }) else { return }
+        let tasks = pages[pageIndex].tasks
+        // مواضع الصفوف الظاهرة داخل المصفوفة الحقيقية، بترتيب تصاعدي
+        let slots = visibleIDs.compactMap { id in tasks.firstIndex(where: { $0.id == id }) }
+        guard slots.count == visibleIDs.count, slots == slots.sorted() else { return }
+        var subset = slots.map { tasks[$0] }
+        guard !source.isEmpty,
+              source.allSatisfy({ subset.indices.contains($0) }),
+              (0...subset.count).contains(destination) else { return }
+        subset.move(fromOffsets: source, toOffset: destination)
+        var updated = pages
+        for k in slots.indices { updated[pageIndex].tasks[slots[k]] = subset[k] }
+        guard updated != pages else { return }
+        withAnimation { pages = updated }
+    }
+
     func moveTask(_ taskID: UUID, from sourcePageID: UUID, to targetPageID: UUID) {
         guard let s = pages.firstIndex(where: { $0.id == sourcePageID }),
               let t = pages.firstIndex(where: { $0.id == targetPageID }),
