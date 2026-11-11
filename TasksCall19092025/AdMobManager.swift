@@ -13,15 +13,16 @@ import GoogleMobileAds
 
 // MARK: - Ad Unit IDs
 struct AdConfig {
-    // ⚠️ هذه معرفات اختبارية — غيّرها بمعرفاتك الحقيقية قبل النشر
+    // DEBUG: معرّفات Google الاختبارية الرسمية — لا تُغيَّر
     #if DEBUG
     static let bannerAdUnitID = "ca-app-pub-3940256099942544/2435281174" // Test Banner
     static let interstitialAdUnitID = "ca-app-pub-3940256099942544/4411468910" // Test Interstitial
     static let rewardedAdUnitID = "ca-app-pub-3940256099942544/1712485313" // Test Rewarded
+    // RELEASE: معرّفات تطبيق AdMob المربوط بـ App Store
     #else
-    static let bannerAdUnitID = "ca-app-pub-2246849300811913/2034108997"
-    static let interstitialAdUnitID = "ca-app-pub-2246849300811913/3798509006"
-    static let rewardedAdUnitID = "ca-app-pub-2246849300811913/8067571202"
+    static let bannerAdUnitID = "ca-app-pub-2246849300811913/9589652420"
+    static let interstitialAdUnitID = "ca-app-pub-2246849300811913/6963489089"
+    static let rewardedAdUnitID = "ca-app-pub-2246849300811913/9398080732"
     #endif
 }
 
@@ -77,10 +78,14 @@ struct AdaptiveBannerAdView: UIViewRepresentable {
 final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenContentDelegate {
     @Published var isAdReady: Bool = false
     private var interstitialAd: GADInterstitialAd?
-    private var adShownCount: Int = 0
 
-    // عرض الإعلان كل 3 أفعال (مثلاً كل 3 مهام مكتملة)
-    var showEveryNActions: Int = 3
+    // عرض الإعلان كل 5 مهام مكتملة مع مراعاة الفواصل الزمنية
+    let showEveryNActions: Int = 5
+    private let minimumIntervalBetweenAds: TimeInterval = 180   // 3 دقائق
+    private let gracePeriodAfterLaunch: TimeInterval = 60        // أول دقيقة بعد الفتح
+    private let launchDate = Date()
+    private var lastAdShownAt: Date?
+    private var completedActions: Int = 0
 
     override init() {
         super.init()
@@ -103,13 +108,21 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
         }
     }
 
-    /// يُستدعى عند إكمال مهمة — يعرض الإعلان كل N أفعال
-    func trackAction() {
-        adShownCount += 1
-        if adShownCount >= showEveryNActions {
-            showAd()
-            adShownCount = 0
+    /// يُستدعى عند تحويل مهمة إلى «منجزة» فقط.
+    /// adFree: صحيح إذا كان المستخدم مشتركاً أو مفعّلاً مكافأة إخفاء الإعلانات.
+    func trackAction(adFree: Bool) {
+        guard !adFree else { return }
+        completedActions += 1
+        guard completedActions >= showEveryNActions else { return }
+        guard Date().timeIntervalSince(launchDate) >= gracePeriodAfterLaunch else { return }
+        if let last = lastAdShownAt, Date().timeIntervalSince(last) < minimumIntervalBetweenAds { return }
+        guard interstitialAd != nil else {
+            loadAd()          // غير جاهز: حمّل للمرة القادمة ولا تؤخّر المستخدم
+            return
         }
+        completedActions = 0
+        lastAdShownAt = Date()
+        showAd()
     }
 
     func showAd() {
@@ -254,9 +267,9 @@ struct AdaptiveBannerAdView: View {
 @MainActor
 final class InterstitialAdManager: ObservableObject {
     @Published var isAdReady: Bool = false
-    var showEveryNActions: Int = 3
+    let showEveryNActions: Int = 5
     func loadAd() {}
-    func trackAction() {}
+    func trackAction(adFree: Bool) {}
     func showAd() {}
 }
 

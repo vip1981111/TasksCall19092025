@@ -18,6 +18,8 @@ struct TaskDetailView: View {
     let taskID: UUID
     var onToggleDaily: (Bool) -> Void
     @EnvironmentObject private var store: TasksStore
+    @EnvironmentObject private var interstitialAd: InterstitialAdManager
+    @EnvironmentObject private var subscriptionManager: SubscriptionManager
     @EnvironmentObject private var themeManager: ThemeManager
 
     @State private var newStepTitle: String = ""
@@ -606,6 +608,12 @@ struct TaskDetailView: View {
                             t.steps[i].completedAt = t.steps[i].completedAt ?? Date()
                         }
                     }
+                }
+                if newValue {
+                    store.handleTaskCompleted(taskID: task.id)
+                    interstitialAd.trackAction(adFree: subscriptionManager.isPremium || subscriptionManager.isAdFreeFromReward)
+                } else {
+                    store.handleTaskUncompleted(task: task)
                 }
             }
         ))

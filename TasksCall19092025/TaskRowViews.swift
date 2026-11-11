@@ -18,6 +18,8 @@ struct TaskRowContainer: View {
     var onToggleDaily: (Bool) -> Void
     var onMoveToPage: (UUID) -> Void
     @EnvironmentObject private var store: TasksStore
+    @EnvironmentObject private var interstitialAd: InterstitialAdManager
+    @EnvironmentObject private var subscriptionManager: SubscriptionManager
     @EnvironmentObject private var themeManager: ThemeManager
 
     var body: some View {
@@ -87,6 +89,7 @@ struct TaskRowContainer: View {
     }
 
     private func toggleDone() {
+        let becameDone = !task.isDone
         // إطلاق objectWillChange قبل التعديل يضمن أن SwiftUI يُعيد رسم الصف فوراً
         store.objectWillChange.send()
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -98,6 +101,12 @@ struct TaskRowContainer: View {
                     task.steps[i].completedAt = task.steps[i].completedAt ?? Date()
                 }
             }
+        }
+        if becameDone {
+            store.handleTaskCompleted(taskID: task.id)
+            interstitialAd.trackAction(adFree: subscriptionManager.isPremium || subscriptionManager.isAdFreeFromReward)
+        } else {
+            store.handleTaskUncompleted(task: task)
         }
     }
 }

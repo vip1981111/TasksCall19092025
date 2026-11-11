@@ -402,6 +402,13 @@ final class TasksStore: ObservableObject {
                 }
             }
         }
+        if done {
+            ids.forEach { handleTaskCompleted(taskID: $0) }
+        } else {
+            for task in pages[i].tasks where ids.contains(task.id) {
+                handleTaskUncompleted(task: task)
+            }
+        }
     }
 
     func setPriority(in pageID: UUID, ids: Set<UUID>, priority: TaskPriority) {
@@ -533,8 +540,20 @@ final class TasksStore: ObservableObject {
 
     // MARK: - إشعارات مخصصة لكل مهمة (تذكير + تكرار مستقلين)
 
+    /// تُستدعى عند تحويل مهمة إلى منجزة: تُلغى تذكيراتها
+    func handleTaskCompleted(taskID: UUID) {
+        cancelTaskNotification(taskID: taskID)
+        cancelDailyNotification(taskID: taskID)
+    }
+
+    /// تُستدعى عند إرجاع مهمة إلى غير منجزة: تُعاد جدولة تذكيراتها
+    func handleTaskUncompleted(task: TaskItem) {
+        scheduleTaskNotification(for: task)
+    }
+
     func scheduleTaskNotification(for task: TaskItem) {
         guard notificationsEnabled else { return }
+        guard !task.isDone else { cancelTaskNotification(taskID: task.id); return }
         cancelTaskNotification(taskID: task.id)
 
         // ١) إشعار التذكير (مرة واحدة — حسب dueDate)
