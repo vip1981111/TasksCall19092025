@@ -521,6 +521,17 @@ struct ContentView: View {
         } message: {
             Text("سيتم حذف المجلد فقط. صفحاته (\(store.pages(inFolder: folderToDelete).count)) ومهامها تبقى كما هي وتعود إلى «بدون مجلد».")
         }
+        .alert("وُجدت نسخة في iCloud", isPresented: Binding(
+            get: { store.pendingCloudRestore != nil },
+            set: { if !$0 { store.cancelPendingCloudRestore() } }
+        )) {
+            Button("استعادة") { store.confirmPendingCloudRestore() }
+            Button("ليس الآن", role: .cancel) { store.cancelPendingCloudRestore() }
+        } message: {
+            if let pending = store.pendingCloudRestore {
+                Text("تحتوي النسخة على \(pending.pagesCount) صفحة و\(pending.tasksCount) مهمة. ستحلّ محل بياناتك الحالية، وسنحفظ نسخة منها قبل الاستبدال.")
+            }
+        }
         .sheet(item: $renamingPage) { page in
             NavigationStack {
                 Form {

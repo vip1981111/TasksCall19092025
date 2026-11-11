@@ -10,6 +10,13 @@ import Combine
 import UserNotifications
 import ZIPFoundation
 
+/// نسخة iCloud وُجدت وتنتظر قرار المستخدم — لا تُطبَّق تلقائياً
+struct PendingCloudRestore: Equatable {
+    let data: Data
+    let pagesCount: Int
+    let tasksCount: Int
+}
+
 @MainActor
 final class TasksStore: ObservableObject {
     // flags لمنع sync loop وتزامن متعدد
@@ -44,6 +51,7 @@ final class TasksStore: ObservableObject {
         didSet { UserDefaults.standard.set(deleteAttachmentFilesOnRemove, forKey: "deleteAttachmentFilesOnRemove") }
     }
 
+    @Published var pendingCloudRestore: PendingCloudRestore? = nil
     @Published var loadFailureNotice: String? = nil
     let isUsingFallbackStorage: Bool
     private let fileURL: URL
@@ -637,12 +645,12 @@ final class TasksStore: ObservableObject {
         } catch { return nil }
     }
 
-    /// نسخة أمان قبل أي استيراد يستبدل كل البيانات
+    /// نسخة أمان قبل استيراد أو استعادة تستبدل كل البيانات
     @discardableResult
-    private func snapshotBeforeImport() -> URL? {
+    private func snapshotCurrentFile(prefix: String) -> URL? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else { return nil }
-        let prefix = fileURL.deletingPathExtension().lastPathComponent + ".pre-import-"
+        let prefix = fileURL.deletingPathExtension().lastPathComponent + "." + prefix
         let fileExtension = fileURL.pathExtension.isEmpty ? "json" : fileURL.pathExtension
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -666,7 +674,7 @@ final class TasksStore: ObservableObject {
     func importData(from url: URL) throws {
         let data = try Data(contentsOf: url)
         let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
-        snapshotBeforeImport()
+        snapshotCurrentFile(prefix: "pre-import-")
         self.pages = decoded
     }
 
@@ -1036,11 +1044,11 @@ final class TasksStore: ObservableObject {
         return true
     }
 
-    /// استعادة تلقائية بعد إعادة تثبيت التطبيق
+    /// اكتشاف نسخة للاستعادة بعد موافقة المستخدم
     func tryAutoRestore() async {
         guard cloudKit.iCloudAvailable else { return }
 
-        // كشف حالتين تستوجبان الاستعادة:
+        // كشف حالتين لعرض خيار الاستعادة:
         // ١) البيانات افتراضية (ما أضاف المستخدم شيئاً بعد)
         // ٢) البيانات المحلية فارغة تماماً (بعد حذف التطبيق وإعادة تثبيته)
         let defaultTaskTitles: Set<String> = ["كتابة تقرير", "قراءة البريد", "مراجعة المهام"]
@@ -1052,8 +1060,33 @@ final class TasksStore: ObservableObject {
 
         guard let remoteData = await cloudKit.download() else { return }
 
-        // استبدال كامل — لا دمج مع الافتراضية أو الفارغة
-        applyMergedPages(from: remoteData)
+        stagePendingCloudRestore(from: remoteData)
+    }
+
+    /// يطبّق الاستعادة بعد موافقة المستخدم، بعد أخذ نسخة أمان محلية
+    func confirmPendingCloudRestore() {
+        guard let pending = pendingCloudRestore else { return }
+        snapshotCurrentFile(prefix: "pre-restore-")
+        applyMergedPages(from: pending.data)
+        pendingCloudRestore = nil
+    }
+
+    /// يرفض الاستعادة ويُبقي البيانات المحلية كما هي
+    func cancelPendingCloudRestore() {
+        pendingCloudRestore = nil
+    }
+
+    /// للاختبار ولمسارات لا تمرّ بـ CloudKit — تجهيز استعادة معلّقة من بيانات جاهزة
+    @discardableResult
+    func stagePendingCloudRestore(from data: Data) -> Bool {
+        guard let backup = try? JSONDecoder().decode(SyncBackup.self, from: data),
+              !backup.pages.isEmpty else { return false }
+        let tasksCount = backup.pages.reduce(0) { $0 + $1.tasks.count }
+        guard tasksCount > 0 else { return false }
+        pendingCloudRestore = PendingCloudRestore(data: data,
+                                                  pagesCount: backup.pages.count,
+                                                  tasksCount: tasksCount)
+        return true
     }
 
     /// معالجة تغييرات من جهاز آخر (push notification)
@@ -1077,7 +1110,8 @@ final class TasksStore: ObservableObject {
 
     // MARK: - دمج البيانات بالـ ID
 
-    private func mergeData(local: Data, remote: Data) -> Data {
+    /// داخلية لا خاصة: اختبارات الوحدة تتحقق من حسم التعارض بالأحدث
+    func mergeData(local: Data, remote: Data) -> Data {
         guard let localBackup = try? JSONDecoder().decode(SyncBackup.self, from: local),
               let remoteBackup = try? JSONDecoder().decode(SyncBackup.self, from: remote) else {
             return local // فشل فك التشفير — أرجع المحلي
@@ -1141,6 +1175,15 @@ final class TasksStore: ObservableObject {
                     if let existingId = mergedPagesMap.first(where: { $0.value.name == page.name })?.key,
                        var existingPage = mergedPagesMap[existingId] {
                         existingPage.tasks = mergeTasksById(existingPage.tasks, page.tasks, deletedIds: allDeletedIds)
+                        // الاسم مفتاح المطابقة هنا؛ لا ننقله لتجنّب تعارض الأسماء.
+                        let localDate = existingPage.modifiedAt ?? .distantPast
+                        let remoteDate = page.modifiedAt ?? .distantPast
+                        if remoteDate > localDate {
+                            existingPage.folderName = page.folderName
+                            existingPage.sortIndex = page.sortIndex
+                        }
+                        let latestDate = max(localDate, remoteDate)
+                        existingPage.modifiedAt = latestDate == .distantPast ? nil : latestDate
                         mergedPagesMap[existingId] = existingPage
                     }
                 } else {
