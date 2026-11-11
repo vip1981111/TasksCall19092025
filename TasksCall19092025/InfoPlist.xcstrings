@@ -1,0 +1,70 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSUserTrackingUsageDescription": {
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نستخدم بياناتك لعرض إعلانات أكثر ملاءمة لك. يمكنك الرفض ومواصلة استخدام التطبيق مع إعلانات غير مخصّصة."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app uses your data to provide personalized ads. You can decline and still use the app with non-personalized ads."
+          }
+        }
+      }
+    },
+    "NSCameraUsageDescription": {
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نحتاج إذن الكاميرا لمسح المستندات والتقاط الصور وإرفاقها بمهامك."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app needs camera access to scan documents and capture photos for task attachments."
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryUsageDescription": {
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نحتاج إذن الصور لإرفاق صورك بمهامك."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app needs photo library access to attach images to your tasks."
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryAddUsageDescription": {
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نحتاج الإذن لحفظ المستندات والصور الممسوحة في مكتبة صورك."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app needs photo library access to save scanned documents and images."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

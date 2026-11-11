@@ -13,6 +13,7 @@ struct ContentView: View {
     @EnvironmentObject private var subscriptionManager: SubscriptionManager
     @EnvironmentObject private var themeManager: ThemeManager
     @EnvironmentObject private var rewardedAd: RewardedAdManager
+    @Environment(\.editMode) private var editMode
     @State private var selectedPageID: UUID? = nil
     @State private var newTaskTitle: String = ""
     @FocusState private var isTextFieldFocused: Bool
@@ -28,6 +29,7 @@ struct ContentView: View {
     @State private var isShowingSettings: Bool = false
     @State private var showAddDuplicateAlert: Bool = false
     @State private var showRenameDuplicateAlert: Bool = false
+    @State private var showFolderRenameDuplicateAlert: Bool = false
     @State private var showAddTaskSheet: Bool = false
     @State private var pageToDelete: TaskPage? = nil
 
@@ -49,6 +51,14 @@ struct ContentView: View {
     private var currentPage: TaskPage? {
         guard let id = selectedPageID else { return store.pages.first(where: { $0.isDaily }) ?? store.pages.first }
         return store.pages.first(where: { $0.id == id })
+    }
+
+    /// الترتيب اليدوي صحيح فقط حين تكون القائمة المعروضة هي ترتيب الصفحة الخام
+    private var canReorderTasks: Bool {
+        guard let page = currentPage, !page.isDaily else { return false }
+        return filter == .all
+            && !sortByPriority
+            && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var currentPageIndex: Int? {
@@ -164,6 +174,7 @@ struct ContentView: View {
                                 }
                             }
                             .onMove { indices, newOffset in
+                                guard canReorderTasks else { return }
                                 if let page = currentPage, !page.isDaily, let pageID = currentPage?.id {
                                     store.moveTasks(in: pageID, from: indices, to: newOffset)
                                 }
@@ -237,7 +248,15 @@ struct ContentView: View {
                     Button { isShowingSettings = true } label: { Image(systemName: "gearshape").font(.title3) }
                         .accessibilityLabel("الإعدادات")
                 }
-                ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(currentPage?.isDaily == true) }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(editMode?.wrappedValue.isEditing == true ? "تم" : "تحرير") {
+                        withAnimation {
+                            editMode?.wrappedValue = editMode?.wrappedValue.isEditing == true ? .inactive : .active
+                        }
+                    }
+                    .disabled(!canReorderTasks)
+                    .accessibilityIdentifier("editToggleButton")
+                }
                 ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("تم") { isTextFieldFocused = false } }
             }
             .sheet(isPresented: $isShowingSettings) {
@@ -277,6 +296,7 @@ struct ContentView: View {
                                 Button { showAddTaskSheet = false } label: { Image(systemName: "xmark.circle.fill").imageScale(.medium).foregroundStyle(.secondary) }
                             }
                             TextField("عنوان المهمة", text: $newTaskTitle)
+                                .accessibilityIdentifier("newTaskField")
                                 .textFieldStyle(.roundedBorder)
                                 .submitLabel(.done)
                                 .onSubmit { addTask(); showAddTaskSheet = false }
@@ -324,6 +344,9 @@ struct ContentView: View {
                 ensureSelectionInsideFolder()
                 store.requestNotificationAuthorizationIfNeeded()
             }
+            .onChange(of: canReorderTasks) { _, canReorder in
+                if !canReorder { editMode?.wrappedValue = .inactive }
+            }
             .onChange(of: store.folderNames) { _, _ in
                 ensureSelectionInsideFolder()
             }
@@ -343,6 +366,9 @@ struct ContentView: View {
                     .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(theme.primaryTextColor)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .truncationMode(.tail)
+                    .allowsTightening(true)
                     .layoutPriority(1)
                 Spacer()
                 Button {
@@ -351,6 +377,8 @@ struct ContentView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "folder")
                         Text(folderButtonTitle).lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: 120)
                         Image(systemName: "chevron.down").font(.caption2)
                             .rotationEffect(.degrees(isFolderBarOpen ? 180 : 0))
                     }
@@ -370,6 +398,7 @@ struct ContentView: View {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(theme.secondaryTextColor)
                 TextField("ابحث في المهام", text: $searchText).textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("searchField")
             }
             .padding(.horizontal).padding(.vertical, 10)
             .background(theme.searchBarBackground).clipShape(Capsule()).padding(.horizontal)
@@ -469,12 +498,12 @@ struct ContentView: View {
                 let name = folderRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if store.renameFolder(old, to: name) {
                     if selectedFolderRaw == old { selectedFolderRaw = name }
-                } else { showRenameDuplicateAlert = true }
+                } else { showFolderRenameDuplicateAlert = true }
                 renamingFolder = nil
             }
             Button("إلغاء", role: .cancel) { renamingFolder = nil }
         }
-        .alert("إعادة تسمية المجلد", isPresented: $showRenameDuplicateAlert) {
+        .alert("إعادة تسمية المجلد", isPresented: $showFolderRenameDuplicateAlert) {
             Button("حسنًا", role: .cancel) { }
         }
         .alert("حذف المجلد", isPresented: Binding(
@@ -491,6 +520,35 @@ struct ContentView: View {
             Button("إلغاء", role: .cancel) { folderToDelete = nil }
         } message: {
             Text("سيتم حذف المجلد فقط. صفحاته (\(store.pages(inFolder: folderToDelete).count)) ومهامها تبقى كما هي وتعود إلى «بدون مجلد».")
+        }
+        .sheet(item: $renamingPage) { page in
+            NavigationStack {
+                Form {
+                    Section("اسم الصفحة") {
+                        TextField("اسم الصفحة", text: $renameText)
+                            .submitLabel(.done)
+                            .onSubmit { renamePage(id: page.id) }
+                            .accessibilityIdentifier("renamePageField")
+                    }
+                }
+                .navigationTitle("إعادة تسمية الصفحة")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("إلغاء") { renamingPage = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("حفظ") { renamePage(id: page.id) }
+                            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("renamePageSave")
+                    }
+                }
+                .alert("اسم الصفحة مكرر", isPresented: $showRenameDuplicateAlert) {
+                    Button("حسنًا", role: .cancel) { }
+                } message: {
+                    Text("يوجد صفحة أخرى بنفس الاسم. اختر اسمًا مختلفًا.")
+                }
+            }
+            .forceRTL()
         }
         .sheet(isPresented: $isAddingPage, onDismiss: { ensureSelectionInsideFolder() }) {
             NavigationStack {
@@ -630,10 +688,12 @@ struct ContentView: View {
                             .foregroundStyle(filter == f ? theme.activeFilterTextColor : theme.primaryTextColor)
                             .clipShape(Capsule())
                     }
+                    .accessibilityIdentifier("filterChip-\(f.rawValue)")
                 }
                 HStack(spacing: 8) {
                     Text("ترتيب بالأولوية").font(.footnote).foregroundStyle(theme.secondaryTextColor)
                     Toggle("", isOn: $sortByPriority).labelsHidden().tint(theme.accentColor)
+                        .accessibilityIdentifier("sortByPriorityToggle")
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(theme.unselectedChipBackground).clipShape(Capsule())

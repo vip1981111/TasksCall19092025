@@ -637,9 +637,36 @@ final class TasksStore: ObservableObject {
         } catch { return nil }
     }
 
+    /// نسخة أمان قبل أي استيراد يستبدل كل البيانات
+    @discardableResult
+    private func snapshotBeforeImport() -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: fileURL.path) else { return nil }
+        let prefix = fileURL.deletingPathExtension().lastPathComponent + ".pre-import-"
+        let fileExtension = fileURL.pathExtension.isEmpty ? "json" : fileURL.pathExtension
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        let directory = fileURL.deletingLastPathComponent()
+        var date = Date()
+        var destination: URL
+        repeat {
+            destination = directory.appendingPathComponent("\(prefix)\(formatter.string(from: date)).\(fileExtension)")
+            date = date.addingTimeInterval(1)
+        } while fm.fileExists(atPath: destination.path)
+        do {
+            try fm.copyItem(at: fileURL, to: destination)
+            return destination
+        } catch {
+            return nil
+        }
+    }
+
     func importData(from url: URL) throws {
         let data = try Data(contentsOf: url)
         let decoded = try JSONDecoder().decode([TaskPage].self, from: data)
+        snapshotBeforeImport()
         self.pages = decoded
     }
 
@@ -739,8 +766,16 @@ final class TasksStore: ObservableObject {
                 throw NSError(domain: "zip", code: -1, userInfo: [NSLocalizedDescriptionKey: "تعذر فتح ملف ZIP: \(error.localizedDescription)"])
             }
 
+            let resolvedRoot = destRoot.standardizedFileURL.resolvingSymlinksInPath().path
             for entry in archive {
                 let outURL = destRoot.appendingPathComponent(entry.path)
+                let resolvedOut = outURL.standardizedFileURL.resolvingSymlinksInPath().path
+                guard resolvedOut == resolvedRoot || resolvedOut.hasPrefix(resolvedRoot + "/") else {
+                    #if DEBUG
+                    NSLog("⚠️ تخطّي مدخل ZIP خارج النطاق")
+                    #endif
+                    continue
+                }
                 let parent = outURL.deletingLastPathComponent()
                 if !fm.fileExists(atPath: parent.path) {
                     try fm.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -749,7 +784,7 @@ final class TasksStore: ObservableObject {
                     _ = try archive.extract(entry, to: outURL, skipCRC32: false)
                 } catch {
                     #if DEBUG
-                    NSLog("⚠️ فشل فك ضغط: \(entry.path) - \(error.localizedDescription)")
+                    NSLog("⚠️ فشل فك ضغط مدخل ZIP")
                     #endif
                 }
             }
