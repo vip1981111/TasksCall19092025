@@ -71,6 +71,7 @@ struct TasksCall19092025App: App {
                 .forceRTL()
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
+                        Task { await subscriptionManager.refreshEntitlements() }
                         // إزالة المهام اليومية المنتهية (24 ساعة) تلقائياً
                         store.checkAndRemoveExpiredDailyTasks()
                         // Auto-sync عند فتح التطبيق

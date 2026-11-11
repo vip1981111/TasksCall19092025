@@ -44,6 +44,14 @@ enum PlanType: String, Identifiable {
     }
 }
 
+/// نتيجة محاولة الشراء — ثلاث حالات متمايزة بدل Bool
+enum PurchaseOutcome {
+    case success
+    case pending      // بانتظار موافقة ولي الأمر أو مصادقة البنك
+    case cancelled    // المستخدم ألغى
+    case failed       // خطأ فعلي، والرسالة في errorMessage
+}
+
 // MARK: - مدير الاشتراكات
 @MainActor
 final class SubscriptionManager: ObservableObject {
@@ -51,6 +59,7 @@ final class SubscriptionManager: ObservableObject {
     @Published var purchasedProductIDs: Set<String> = []
     @Published var isLoading: Bool = false
     @Published var errorMessage: String? = nil
+    @Published var infoMessage: String? = nil
 
     var isPremium: Bool {
         !purchasedProductIDs.isEmpty || TrialService.shared.isTrialActive
@@ -143,32 +152,42 @@ final class SubscriptionManager: ObservableObject {
     }
 
     // MARK: - شراء منتج
-    func purchase(_ product: Product) async -> Bool {
+    func purchase(_ product: Product) async -> PurchaseOutcome {
         isLoading = true
         errorMessage = nil
+        infoMessage = nil
         do {
             let result = try await product.purchase()
             switch result {
             case .success(let verification):
                 let transaction = try checkVerified(verification)
-                purchasedProductIDs.insert(transaction.productID)
                 await transaction.finish()
+                // مصدر الحقيقة الوحيد — يحترم revocationDate ولا نضيف يدوياً
+                await updatePurchasedProducts()
                 isLoading = false
-                return true
+                if transaction.revocationDate != nil {
+                    errorMessage = "تم استرجاع هذه العملية."
+                    return .failed
+                }
+                return .success
             case .userCancelled:
+                errorMessage = nil
+                infoMessage = nil
                 isLoading = false
-                return false
+                return .cancelled
             case .pending:
+                infoMessage = "طلبك بانتظار الموافقة. سيُفعّل الاشتراك تلقائياً فور اعتمادها."
                 isLoading = false
-                return false
+                return .pending
             @unknown default:
+                errorMessage = "تعذّر إتمام العملية."
                 isLoading = false
-                return false
+                return .failed
             }
         } catch {
             errorMessage = "فشلت عملية الشراء"
             isLoading = false
-            return false
+            return .failed
         }
     }
 
@@ -189,6 +208,18 @@ final class SubscriptionManager: ObservableObject {
         if purchasedProductIDs.isEmpty {
             errorMessage = "لم يتم العثور على مشتريات سابقة"
         }
+    }
+
+    /// يُعيد قراءة الاستحقاقات من App Store ويحدّث ما يعتمد على الوقت.
+    /// تُستدعى عند عودة التطبيق للواجهة.
+    func refreshEntitlements() async {
+        await updatePurchasedProducts()
+        // مكافأة إخفاء الإعلانات المنتهية تُصفّر صراحةً
+        if let until = adFreeUntil, Date() >= until {
+            adFreeUntil = nil
+        }
+        // حالة التجربة زمنية وليست @Published — أبلغ الواجهة صراحةً
+        objectWillChange.send()
     }
 
     // MARK: - تحديث المشتريات
@@ -496,9 +527,9 @@ struct PaywallView: View {
             Button {
                 Task {
                     if let product = subscriptionManager.products.first(where: { $0.id == selectedPlan }) {
-                        let success = await subscriptionManager.purchase(product)
-                        if success {
-                            dismiss()
+                        switch await subscriptionManager.purchase(product) {
+                        case .success: dismiss()
+                        case .pending, .cancelled, .failed: break   // الرسالة معروضة أسفل الزر
                         }
                     } else if subscriptionManager.products.isEmpty {
                         // المنتجات لم تتحمل — حاول تحميلها مرة أخرى
@@ -506,9 +537,9 @@ struct PaywallView: View {
                         if subscriptionManager.products.isEmpty {
                             subscriptionManager.errorMessage = "تعذر الاتصال بالمتجر. تأكد من اتصالك بالإنترنت وحاول مرة أخرى."
                         } else if let product = subscriptionManager.products.first(where: { $0.id == selectedPlan }) {
-                            let success = await subscriptionManager.purchase(product)
-                            if success {
-                                dismiss()
+                            switch await subscriptionManager.purchase(product) {
+                            case .success: dismiss()
+                            case .pending, .cancelled, .failed: break   // الرسالة معروضة أسفل الزر
                             }
                         }
                     }
@@ -544,6 +575,12 @@ struct PaywallView: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+            if let info = subscriptionManager.infoMessage {
+                Text(info)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
                     .multilineTextAlignment(.center)
             }
         }
