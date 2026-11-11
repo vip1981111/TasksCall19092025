@@ -253,3 +253,83 @@ final class CloudKitManager: ObservableObject {
         #endif
     }
 }
+
+// MARK: - Independent attachment records (TaskPages is unchanged)
+extension CloudKitManager: AttachmentCloudStore {
+    private func requireAttachmentSync() throws {
+        guard syncEnabled && iCloudAvailable else { throw AttachmentCloudError.unavailable }
+    }
+
+    func uploadAttachment(id: UUID, fileName: String, fileURL: URL) async throws {
+        try requireAttachmentSync()
+        let recordID = CKRecord.ID(recordName: id.uuidString)
+        let record: CKRecord
+        do { record = try await privateDB.record(for: recordID) }
+        catch let error as CKError where error.code == .unknownItem {
+            record = CKRecord(recordType: "TaskAttachmentFile", recordID: recordID)
+        }
+        record["file"] = CKAsset(fileURL: fileURL)
+        record["fileName"] = fileName as CKRecordValue
+        record["modifiedAt"] = Date() as CKRecordValue
+        try requireAttachmentSync()
+        do { _ = try await privateDB.save(record) }
+        catch let error as CKError where error.code == .serverRecordChanged {
+            guard let server = error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord else { throw error }
+            server["file"] = CKAsset(fileURL: fileURL)
+            server["fileName"] = fileName as CKRecordValue
+            server["modifiedAt"] = Date() as CKRecordValue
+            try requireAttachmentSync()
+            _ = try await privateDB.save(server)
+        }
+    }
+
+    func downloadAttachment(id: UUID, to destination: URL) async throws {
+        try requireAttachmentSync()
+        let record = try await privateDB.record(for: CKRecord.ID(recordName: id.uuidString))
+        guard let asset = record["file"] as? CKAsset, let source = asset.fileURL else {
+            throw AttachmentCloudError.missingAsset
+        }
+        try requireAttachmentSync()
+        try FileManager.default.copyItem(at: source, to: destination)
+    }
+
+    func deleteAttachment(id: UUID) async throws {
+        try requireAttachmentSync()
+        do { _ = try await privateDB.deleteRecord(withID: CKRecord.ID(recordName: id.uuidString)) }
+        catch let error as CKError where error.code == .unknownItem { return }
+    }
+
+    func listAttachmentIDs() async throws -> Set<UUID> {
+        try requireAttachmentSync()
+        let query = CKQuery(recordType: "TaskAttachmentFile", predicate: NSPredicate(value: true))
+        var page = try await privateDB.records(matching: query, desiredKeys: [])
+        var ids: Set<UUID> = []
+        while true {
+            for (id, result) in page.matchResults {
+                _ = try result.get()
+                if let uuid = UUID(uuidString: id.recordName) { ids.insert(uuid) }
+            }
+            guard let cursor = page.queryCursor else { return ids }
+            try requireAttachmentSync()
+            page = try await privateDB.records(continuingMatchFrom: cursor, desiredKeys: [])
+        }
+    }
+}
+
+/// Defers CloudKit initialization so isolated storage tests never create a container.
+@MainActor
+final class DeferredAttachmentCloudStore: AttachmentCloudStore {
+    var manager: (() -> CloudKitManager?)?
+    private func activeManager() throws -> CloudKitManager {
+        guard let value = manager?() else { throw AttachmentCloudError.unavailable }
+        return value
+    }
+    func uploadAttachment(id: UUID, fileName: String, fileURL: URL) async throws {
+        try await activeManager().uploadAttachment(id: id, fileName: fileName, fileURL: fileURL)
+    }
+    func downloadAttachment(id: UUID, to destination: URL) async throws {
+        try await activeManager().downloadAttachment(id: id, to: destination)
+    }
+    func deleteAttachment(id: UUID) async throws { try await activeManager().deleteAttachment(id: id) }
+    func listAttachmentIDs() async throws -> Set<UUID> { try await activeManager().listAttachmentIDs() }
+}
