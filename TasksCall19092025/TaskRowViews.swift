@@ -34,6 +34,8 @@ struct TaskRowContainer: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
+            .accessibilityIdentifier("taskDoneToggle-\(task.title)")
+            .accessibilityLabel(task.isDone ? "إلغاء إنجاز \(task.title)" : "إنجاز \(task.title)")
             .buttonStyle(.borderless)
             .padding(.leading, 4)
 
@@ -47,6 +49,7 @@ struct TaskRowContainer: View {
                 .opacity(0)
 
                 TaskCardRow(task: $task, pageName: pageName)
+                    .accessibilityIdentifier("taskRow-\(task.title)")
             }
         }
         .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 12))
@@ -54,13 +57,16 @@ struct TaskRowContainer: View {
         .swipeActions(edge: .trailing) {
             if !isDailyPage {
                 Button(role: .destructive) { onDelete() } label: { Label("حذف", systemImage: "trash") }
+                    .accessibilityIdentifier("taskDelete-\(task.title)")
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if !task.isInDaily {
                 Button { onToggleDaily(true) } label: { Label("إلى اليومي", systemImage: "sun.max") }.tint(.yellow)
+                    .accessibilityIdentifier("taskToDaily-\(task.title)")
             } else {
                 Button { onToggleDaily(false) } label: { Label("إزالة من اليومي", systemImage: "sun.min") }.tint(.orange)
+                    .accessibilityIdentifier("taskFromDaily-\(task.title)")
             }
         }
         .contextMenu {

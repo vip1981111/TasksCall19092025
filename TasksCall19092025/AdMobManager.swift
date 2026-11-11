@@ -85,7 +85,8 @@ final class InterstitialAdManager: NSObject, ObservableObject, GADFullScreenCont
     private let gracePeriodAfterLaunch: TimeInterval = 60        // أول دقيقة بعد الفتح
     private let launchDate = Date()
     private var lastAdShownAt: Date?
-    private var completedActions: Int = 0
+    /// مكشوفة للقراءة لأغراض الاختبار فقط
+    private(set) var completedActions: Int = 0
 
     override init() {
         super.init()
@@ -267,6 +268,7 @@ struct AdaptiveBannerAdView: View {
 @MainActor
 final class InterstitialAdManager: ObservableObject {
     @Published var isAdReady: Bool = false
+    private(set) var completedActions: Int = 0
     let showEveryNActions: Int = 5
     func loadAd() {}
     func trackAction(adFree: Bool) {}
