@@ -28,7 +28,37 @@ enum AttachmentCloudError: LocalizedError {
 
 @MainActor
 final class AttachmentSyncManager: ObservableObject {
-    @Published private(set) var states: [UUID: AttachmentSyncState] = [:]
+    @Published private(set) var states: [UUID: AttachmentSyncState] = [:] {
+        didSet {
+            for (id, state) in states where oldValue[id] != state {
+                switch state {
+                case .uploading, .downloading, .missing: pendingIDs.insert(id)
+                case .failed(let message):
+                    pendingIDs.insert(id)
+                    lastErrorMessage = message
+                case .available: pendingIDs.remove(id)
+                }
+            }
+            for id in oldValue.keys where states[id] == nil { pendingIDs.remove(id) }
+            pendingCount = pendingIDs.count
+        }
+    }
+    /// عدد المرفقات التي اكتمل رفعها
+    var uploadedCount: Int { uploadedIDs.count }
+    /// المرفقات التي ما زالت تنتظر الرفع أو التنزيل
+    @Published private(set) var pendingCount: Int = 0
+    /// آخر خطأ مزامنة للعرض في الإعدادات
+    @Published private(set) var lastErrorMessage: String? = nil
+    private var pendingIDs: Set<UUID> = []
+
+    /// لقطة تشخيص فقط؛ لا تبدأ عمليات نقل ولا تغيّر حالتها.
+    func updatePendingAttachments(_ attachments: [(TaskAttachment, URL)]) {
+        pendingIDs = Set(attachments.compactMap { attachment, url in
+            !uploadedIDs.contains(attachment.id) || !isUsableFile(at: url) ? attachment.id : nil
+        })
+        pendingIDs.formUnion(inFlight)
+        pendingCount = pendingIDs.count
+    }
     private var uploadedIDs: Set<UUID>
     private var inFlight: Set<UUID> = []
     private var deleting: Set<UUID> = []

@@ -9,6 +9,9 @@ import SwiftUI
 import Combine
 import UserNotifications
 import ZIPFoundation
+#if DEBUG
+import UIKit
+#endif
 
 /// نسخة iCloud وُجدت وتنتظر قرار المستخدم — لا تُطبَّق تلقائياً
 struct PendingCloudRestore: Equatable {
@@ -23,6 +26,7 @@ final class TasksStore: ObservableObject {
     private var isLoadingFromDisk = false
     private var isApplyingRemoteSync = false
     private var isSyncInProgress = false
+    private var lastFetchAt: Date?
     private var hasPendingLocalChanges = false
     @Published var pages: [TaskPage] = [] {
         didSet {
@@ -64,6 +68,13 @@ final class TasksStore: ObservableObject {
 
     init(filename: String = "tasks_pages.json", storageDirectory isolatedDirectory: URL? = nil,
          attachmentCloudStore: AttachmentCloudStore? = nil, attachmentDefaults: UserDefaults? = nil) {
+        #if DEBUG
+        // للاختبار فقط: نعزل ملفات البذر وبياناته عن Documents وعن مزامنة المستخدم.
+        // هذا المسار مستبعد من Release ولا يتغير التخزين بدون وسيط البذر.
+        let isolatedDirectory = ProcessInfo.processInfo.arguments.contains("-UITestSeedAttachments")
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("UITestSeedAttachments", isDirectory: true)
+            : isolatedDirectory
+        #endif
         let deferredCloud = DeferredAttachmentCloudStore()
         let defaults = attachmentDefaults ?? (isolatedDirectory == nil ? .standard : UserDefaults(suiteName: "attachment-tests-\(UUID().uuidString)")!)
         attachmentSync = AttachmentSyncManager(cloudStore: attachmentCloudStore ?? deferredCloud, defaults: defaults)
@@ -110,12 +121,65 @@ final class TasksStore: ObservableObject {
             deferredCloud.manager = { [weak self] in self?.cloudKit }
         }
         load()
+        #if DEBUG
+        seedUITestAttachmentsIfRequested()
+        #endif
         if !usesIsolatedStorage { _ = cloudKit }
         if notificationsEnabled && !usesIsolatedStorage {
             requestNotificationAuthorizationIfNeeded()
             scheduleDailyReminder(at: dailyReminderTime)
         }
     }
+
+    #if DEBUG
+    /// بذر بيانات اختبار واجهة: صفحة فيها مهمة بمرفقَي صورة وPDF حقيقيين.
+    /// للاختبار فقط، يُفعَّل بوسيط -UITestSeedAttachments ومستبعد من Release.
+    func seedUITestAttachmentsIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-UITestSeedAttachments"),
+              usesIsolatedStorage else { return }
+        do {
+            try FileManager.default.createDirectory(at: attachmentsDirectory, withIntermediateDirectories: true)
+            let imageURL = attachmentsDirectory.appendingPathComponent("seed-image.png")
+            let pdfURL = attachmentsDirectory.appendingPathComponent("seed-document.pdf")
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { context in
+                UIColor.systemBlue.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+            }
+            guard let png = image.pngData(), !png.isEmpty else {
+                assertionFailure("تعذّر توليد صورة البذر")
+                return
+            }
+            let pdf = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 200, height: 200)).pdfData { context in
+                context.beginPage()
+                ("Synthetic attachment test" as NSString).draw(at: CGPoint(x: 20, y: 40),
+                    withAttributes: [.font: UIFont.systemFont(ofSize: 12)])
+            }
+            guard !pdf.isEmpty else {
+                assertionFailure("تعذّر توليد PDF البذر")
+                return
+            }
+            try png.write(to: imageURL, options: .atomic)
+            try pdf.write(to: pdfURL, options: .atomic)
+            var attachments = [
+                TaskAttachment(fileName: imageURL.lastPathComponent, fileURL: imageURL, kind: .image),
+                TaskAttachment(fileName: pdfURL.lastPathComponent, fileURL: pdfURL, kind: .document)
+            ]
+            if ProcessInfo.processInfo.arguments.contains("-UITestSeedMissingAttachment") {
+                // يحاكي حالة المالك: مرفق قديم سجلّه موجود وملفه مفقود؛ لا نكتب له ملفاً.
+                let missingURL = attachmentsDirectory.appendingPathComponent("seed-missing.png")
+                attachments.append(TaskAttachment(fileName: "seed-missing.png", fileURL: missingURL, kind: .image))
+            }
+            let task = TaskItem(title: "مهمة المرفقات", attachments: attachments)
+            if let index = pages.firstIndex(where: { $0.name == "مرفقات الاختبار" }) {
+                pages[index].tasks = [task]
+            } else {
+                pages.append(TaskPage(name: "مرفقات الاختبار", tasks: [task]))
+            }
+        } catch {
+            assertionFailure("تعذّر إنشاء مرفقات البذر: \(error.localizedDescription)")
+        }
+    }
+    #endif
 
     // MARK: - مسارات المرفقات
 
@@ -168,6 +232,7 @@ final class TasksStore: ObservableObject {
         guard !usesIsolatedStorage else { return }
         let old = attachmentMap(in: previous)
         let current = attachmentMap(in: pages)
+        attachmentSync.updatePendingAttachments(current.values.map { ($0, resolvedURL(for: $0)) })
         // Task starts after the synchronous UI action, including optional local deletion.
         Task {
             for (id, attachment) in old where current[id] == nil {
@@ -203,6 +268,7 @@ final class TasksStore: ObservableObject {
 
     private func synchronizeAttachmentFiles() async {
         guard !usesIsolatedStorage, cloudKit.syncEnabled && cloudKit.iCloudAvailable else { return }
+        attachmentSync.updatePendingAttachments(attachmentMap(in: pages).values.map { ($0, resolvedURL(for: $0)) })
         // Re-read live data between awaits to avoid uploading attachments removed during a transfer.
         for id in attachmentMap(in: pages).keys {
             guard let attachment = attachmentMap(in: pages)[id] else { continue }
@@ -1071,15 +1137,32 @@ final class TasksStore: ObservableObject {
 
     // MARK: - مزامنة iCloud مع Merge + Tombstone
 
-    /// مزامنة مؤجلة — تنتظر 3 ثوانٍ بعد آخر تغيير قبل الرفع
+    /// مزامنة مؤجلة — تنتظر 1.5 ثانية بعد آخر تغيير قبل الرفع
     private func syncToCloudDebounced() {
         guard !usesIsolatedStorage, cloudKit.syncEnabled, !isSyncInProgress, !isApplyingRemoteSync, hasPendingLocalChanges else { return }
         syncTask?.cancel()
         syncTask = Task {
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled else { return }
             await syncNow()
         }
+    }
+
+    /// جلب عند فتح التفاصيل، مع منع الطلبات المتكررة خلال عشر ثوانٍ.
+    func syncNowIfEnabled() async {
+        guard !usesIsolatedStorage, cloudKit.syncEnabled, cloudKit.iCloudAvailable,
+              !isSyncInProgress else { return }
+        if let lastFetchAt, Date().timeIntervalSince(lastFetchAt) < 10 { return }
+        await syncNow()
+    }
+
+    /// أحداث المرفقات والزر اليدوي تتجاوز مهلة تجميع التعديلات.
+    func syncNowImmediately() async {
+        guard !usesIsolatedStorage, cloudKit.syncEnabled, cloudKit.iCloudAvailable,
+              !isSyncInProgress else { return }
+        syncTask?.cancel()
+        syncTask = nil
+        await syncNow()
     }
 
     /// تتبع حذف مهمة (Tombstone)
@@ -1110,6 +1193,7 @@ final class TasksStore: ObservableObject {
 
         // 2. جلب البيانات من iCloud
         let remoteData = await cloudKit.download()
+        if cloudKit.syncError == nil { lastFetchAt = Date() }
 
         if let remoteData = remoteData {
             // 3. دمج
