@@ -322,51 +322,129 @@ final class CoreFlowsUITests: XCTestCase {
         disappears(row(title), "المهمة المحذوفة ما زالت موجودة في الكل")
     }
 
-    // لا يغطي مرفقاً حقيقياً من منتقي الملفات أو التنزيل الفعلي من iCloud:
-    // نفتح المنتقي ونلغيه فقط لتجنب ملفات المستخدم وحسابه وأي اتصال شبكي.
-    // فحص النص يتم عند نقاط الانتقال وفي فترة مراقبة أخيرة؛ لا يثبت غيابه في كل إطار رسم.
-    func test13_AttachmentPreviewNeverOpensEmpty() {
-        let title = unique("اختبار المرفقات")
-        addTask(title) // يُسجّل للتنظيف في tearDownWithError حتى عند فشل الاختبار.
-        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"]
-        XCTAssertFalse(emptyPreview.exists)
-        tap(row(title).staticTexts[title], "تعذر فتح تفاصيل المهمة")
-        appears(app.navigationBars["تفاصيل المهمة"], "شاشة التفاصيل لم تظهر")
-        XCTAssertFalse(emptyPreview.exists)
+    // المعيار (ج): تبديل المرفق يغيّر عنوان المعاينة ولا يحتفظ بالملف السابق.
+    func test13_SwitchingBetweenAttachmentsShowsCorrectFile() {
+        app.terminate()
+        app.launchArguments = ["-UITestSeedAttachments"]
+        app.launch()
+        openSeededAttachment("seed-image.png")
 
-        let attachments = app.staticTexts["المرفقات"]
+        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"]
+        XCTAssertTrue(app.navigationBars["seed-image"].waitForExistence(timeout: 10),
+            "المعاينة الأولى لم تعرض الصورة الصحيحة")
+        XCTAssertFalse(emptyPreview.exists, "ظهرت شاشة معاينة فارغة للصورة")
+        tap(app.navigationBars["seed-image"].buttons["تم"], "تعذر إغلاق معاينة الصورة")
+        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد إغلاق معاينة الصورة")
+        disappears(app.navigationBars["seed-image"], "معاينة الصورة بقيت بعد إغلاقها")
+
+        let document = app.staticTexts["seed-document.pdf"]
         for _ in 0..<6 {
-            XCTAssertFalse(emptyPreview.exists)
-            if attachments.exists && attachments.isHittable { break }
+            if document.exists && document.isHittable { break }
             app.swipeUp()
         }
-        appears(attachments, "قسم المرفقات لم يظهر")
-        XCTAssertTrue(attachments.isHittable, "قسم المرفقات غير ظاهر على الشاشة")
-        appears(app.staticTexts["لا توجد مرفقات"], "المهمة الجديدة يجب ألا تحتوي مرفقات")
-        XCTAssertFalse(emptyPreview.exists)
-        // إضافة الخطوات معطّلة ما دام عنوان الخطوة فارغاً؛ القائمة المفعّلة تخص المرفقات.
-        let addAttachment = app.buttons.matching(NSPredicate(format: "label == %@ AND enabled == true", "إضافة")).firstMatch
-        tap(addAttachment, "قائمة إضافة المرفق لم تظهر")
-        XCTAssertFalse(emptyPreview.exists)
-        tap(app.buttons["مستند/ملف"], "خيار منتقي الملفات لم يظهر")
-        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["إلغاء", "Cancel"])).firstMatch
-        appears(cancel, "منتقي الملفات لم يُظهر زر الإلغاء")
-        XCTAssertFalse(emptyPreview.exists)
-        tap(cancel, "تعذر إلغاء منتقي الملفات")
-        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد الإلغاء")
-        appears(app.staticTexts["لا توجد مرفقات"], "الإلغاء غيّر قائمة المرفقات")
-        XCTAssertFalse(emptyPreview.exists)
-        let forbidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: emptyPreview)
-        forbidden.isInverted = true
-        XCTAssertEqual(XCTWaiter.wait(for: [forbidden], timeout: 1), .completed,
-                       "ظهرت معاينة فارغة بعد إلغاء المنتقي")
-        // العودة عبر إعادة التشغيل، ثم حذف المهمة عبر نفس مسار التنظيف الموجود.
+        tap(document, "مرفق المستند لم يظهر")
+        XCTAssertTrue(app.navigationBars["seed-document"].waitForExistence(timeout: 10),
+            "المعاينة الثانية لم تعرض الملف الصحيح")
+        XCTAssertFalse(app.navigationBars["seed-image"].exists,
+            "المعاينة ما زالت تعرض الملف السابق — المنسّق لم يُحدَّث")
+        XCTAssertFalse(emptyPreview.exists, "ظهرت شاشة معاينة فارغة للمستند")
+        tap(app.navigationBars["seed-document"].buttons["تم"], "تعذر إغلاق معاينة المستند")
+        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد إغلاق معاينة المستند")
+        disappears(app.navigationBars["seed-document"], "معاينة المستند بقيت بعد إغلاقها")
+        attachScreenshot("preview-switch")
+    }
+
+    func test14_OpenSeededImageAttachment() {
         app.terminate()
+        app.launchArguments = ["-UITestSeedAttachments"]
         app.launch()
+        let fileName = "seed-image.png"
+        let expectedTitle = (fileName as NSString).deletingPathExtension
+        openSeededAttachment(fileName)
+        // نجمع الدليل قبل التأكيدات حتى يبقى متاحاً عند فشل الاختبار.
+        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"].waitForExistence(timeout: 3)
+        let namedPreview = app.navigationBars[expectedTitle].waitForExistence(timeout: 10)
+        attachPreviewTree("preview-image-after")
+        attachScreenshot("preview-image")
+        XCTAssertFalse(emptyPreview,
+            "ظهرت شاشة معاينة فارغة — وضع المعاينة لا يستقبل عنوان الملف")
+        XCTAssertTrue(namedPreview,
+            "QuickLook لم يعرض الملف: لا يوجد شريط عنوان باسم \(expectedTitle)")
+        // زر «تم» داخل شريط المعاينة يؤكد وجود عناصر تحكم العارض.
+        XCTAssertTrue(app.navigationBars[expectedTitle].buttons["تم"].waitForExistence(timeout: 5),
+            "زر «تم» غير موجود داخل شريط المعاينة")
+        XCTAssertGreaterThan(app.buttons.count, 0, "لا توجد عناصر تحكّم في المعاينة")
+        tap(app.navigationBars[expectedTitle].buttons["تم"], "تعذر إغلاق المعاينة")
+        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد إغلاق المعاينة")
+    }
+
+    func test15_OpenSeededPDFAttachment() {
+        app.terminate()
+        app.launchArguments = ["-UITestSeedAttachments"]
+        app.launch()
+        let fileName = "seed-document.pdf"
+        let expectedTitle = (fileName as NSString).deletingPathExtension
+        openSeededAttachment(fileName)
+        // نجمع الدليل قبل التأكيدات حتى يبقى متاحاً عند فشل الاختبار.
+        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"].waitForExistence(timeout: 3)
+        let namedPreview = app.navigationBars[expectedTitle].waitForExistence(timeout: 10)
+        attachPreviewTree("preview-pdf-after")
+        attachScreenshot("preview-pdf")
+        XCTAssertFalse(emptyPreview,
+            "ظهرت شاشة معاينة فارغة — وضع المعاينة لا يستقبل عنوان الملف")
+        XCTAssertTrue(namedPreview,
+            "QuickLook لم يعرض الملف: لا يوجد شريط عنوان باسم \(expectedTitle)")
+        // زر «تم» داخل شريط المعاينة يؤكد وجود عناصر تحكم العارض.
+        XCTAssertTrue(app.navigationBars[expectedTitle].buttons["تم"].waitForExistence(timeout: 5),
+            "زر «تم» غير موجود داخل شريط المعاينة")
+        XCTAssertGreaterThan(app.buttons.count, 0, "لا توجد عناصر تحكّم في المعاينة")
+        tap(app.navigationBars[expectedTitle].buttons["تم"], "تعذر إغلاق المعاينة")
+        appears(app.navigationBars["تفاصيل المهمة"], "لم نعد للتفاصيل بعد إغلاق المعاينة")
+    }
+
+    func test16_MissingAttachmentShowsErrorNotQuickLook() {
+        app.terminate()
+        app.launchArguments = ["-UITestSeedAttachments", "-UITestSeedMissingAttachment"]
+        // ينظّف tearDownWithError صفحة البذر عبر الواجهة حتى عند فشل الاختبار.
+        pagesToDelete.append("مرفقات الاختبار")
+        app.launch()
+        openSeededAttachment("seed-missing.png")
+
+        // نجمع الدليل قبل التأكيدات ليبقى متاحاً حتى إذا فُتحت المعاينة خطأً.
+        let openedQuickLook = app.navigationBars["seed-missing"].waitForExistence(timeout: 5)
+        let emptyPreview = app.staticTexts["لا يوجد ملف لمعاينته"].exists
+        let retry = app.buttons["attachmentRetry-seed-missing.png"].waitForExistence(timeout: 10)
+        attachScreenshot("attachment-failed")
+
+        XCTAssertFalse(openedQuickLook, "فُتحت نافذة QuickLook لمرفق لا ملف له")
+        XCTAssertFalse(emptyPreview, "ظهرت شاشة المعاينة الفارغة بدل رسالة التطبيق")
+        XCTAssertTrue(retry, "زر «إعادة المحاولة» لم يظهر لمرفق مفقود")
+        XCTAssertTrue(element("attachmentState-seed-missing.png").exists,
+            "حالة المرفق المفقود لم تظهر")
+        XCTAssertTrue(app.staticTexts["تعذّر تنزيل المرفق؛ أعد المحاولة"].exists,
+            "رسالة التطبيق لم تظهر للمرفق المفقود")
+    }
+
+    private func openSeededAttachment(_ fileName: String) {
         selectAllFolders()
-        tap(chip("عام"), "تعذر العودة إلى عام للتنظيف")
+        tap(chip("مرفقات الاختبار"), "صفحة البذر لم تظهر")
         setFilter("الكل")
-        deleteTask(title)
+        tap(row("مهمة المرفقات").staticTexts["مهمة المرفقات"], "تعذر فتح مهمة البذر")
+        appears(app.navigationBars["تفاصيل المهمة"], "شاشة التفاصيل لم تظهر")
+        let attachment = app.staticTexts[fileName]
+        for _ in 0..<6 {
+            if attachment.exists && attachment.isHittable { break }
+            app.swipeUp()
+        }
+        attachPreviewTree("\(fileName)-before")
+        tap(attachment, "مرفق البذر لم يظهر: \(fileName)")
+    }
+
+    private func attachPreviewTree(_ name: String) {
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func prepareDefaultReorderState() {
