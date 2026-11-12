@@ -16,6 +16,7 @@ struct SettingsView: View {
     @EnvironmentObject var rewardedAd: RewardedAdManager
     @State private var showPaywall: Bool = false
     @State private var showSyncAlert: Bool = false
+    @State private var isAttachmentSyncRunning = false
     @State private var syncAlertMessage: String = ""
 
     private struct ShareItem: Identifiable { let id = UUID(); let url: URL }
@@ -28,8 +29,11 @@ struct SettingsView: View {
     @State private var exportErrorMessage: String = ""
     @State private var showDocumentsBrowser: Bool = false
 
-    @State private var previewURLsFromDocs: [URL] = []
-    @State private var showPreviewFromDocs: Bool = false
+    private struct PreviewPayload: Identifiable {
+        let url: URL
+        var id: URL { url }
+    }
+    @State private var previewPayload: PreviewPayload? = nil
 
     @State private var showCleanupConfirm: Bool = false
     @State private var showCleanupResult: Bool = false
@@ -73,8 +77,8 @@ struct SettingsView: View {
                 ShareLink(item: item.url) { Label("مشاركة الملف", systemImage: "square.and.arrow.up") }
                     .presentationDetents([.medium, .large])
             }
-            .sheet(isPresented: $showPreviewFromDocs) {
-                previewSheet
+            .sheet(item: $previewPayload) { payload in
+                previewSheet(payload)
             }
         }
     }
@@ -293,9 +297,19 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
                 }
 
+                AttachmentSyncStatusRow(manager: store.attachmentSync)
+                    .onReceive(store.$pages) { pages in
+                        let attachments = pages.flatMap { $0.tasks }.flatMap { $0.attachments }
+                        store.attachmentSync.updatePendingAttachments(
+                            attachments.map { ($0, store.resolvedURL(for: $0)) }
+                        )
+                    }
+
                 Button {
+                    isAttachmentSyncRunning = true
                     Task {
-                        await store.syncNow()
+                        defer { isAttachmentSyncRunning = false }
+                        await store.syncNowImmediately()
                         if let error = store.cloudKit.syncError {
                             syncAlertMessage = "فشلت المزامنة: \(error)"
                         } else {
@@ -304,8 +318,16 @@ struct SettingsView: View {
                         showSyncAlert = true
                     }
                 } label: {
-                    Label("مزامنة الآن", systemImage: "arrow.triangle.2.circlepath")
+                    HStack {
+                        Label("مزامنة الآن", systemImage: "arrow.triangle.2.circlepath")
+                        if isAttachmentSyncRunning {
+                            ProgressView().tint(themeManager.currentTheme.accentColor)
+                        }
+                    }
+                    .foregroundStyle(themeManager.currentTheme.accentColor)
                 }
+                .disabled(isAttachmentSyncRunning || !store.cloudKit.syncEnabled)
+                .accessibilityIdentifier("attachmentSyncNowButton")
 
                 Button {
                     Task {
@@ -592,20 +614,18 @@ struct SettingsView: View {
 
     // MARK: - Preview Sheet
 
-    private var previewSheet: some View {
+    private func previewSheet(_ payload: PreviewPayload) -> some View {
         NavigationStack {
-            QLPreview(urls: previewURLsFromDocs)
+            QLPreview(urls: [payload.url])
                 .ignoresSafeArea()
                 .navigationTitle("معاينة")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    if let url = previewURLsFromDocs.first {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
-                        }
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("إغلاق") { showPreviewFromDocs = false }
-                        }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ShareLink(item: payload.url) { Image(systemName: "square.and.arrow.up") }
+                    }
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("إغلاق") { previewPayload = nil }
                     }
                 }
         }
@@ -636,8 +656,7 @@ struct SettingsView: View {
     private func handleDocumentsBrowserPick(_ pickedURL: URL) {
         let ext = pickedURL.pathExtension.lowercased()
         if ["png","jpg","jpeg","heic"].contains(ext) {
-            previewURLsFromDocs = [pickedURL]
-            showPreviewFromDocs = true
+            previewPayload = PreviewPayload(url: pickedURL)
         } else {
             shareItem = ShareItem(url: pickedURL)
         }
@@ -664,5 +683,28 @@ struct SettingsView: View {
 
     private func updateUnusedAttachmentsCount() {
         unusedAttachmentsCount = store.countUnusedAttachments()
+    }
+}
+
+/// مراقبة المدير مباشرةً لتحديث العدّادات أثناء عمليات النقل.
+private struct AttachmentSyncStatusRow: View {
+    @ObservedObject var manager: AttachmentSyncManager
+    @EnvironmentObject private var themeManager: ThemeManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("حالة مزامنة المرفقات")
+                .foregroundStyle(themeManager.currentTheme.primaryTextColor)
+            Text("عدد المرفوع: \(manager.uploadedCount)")
+                .foregroundStyle(themeManager.currentTheme.secondaryTextColor)
+            Text("في الانتظار: \(manager.pendingCount)")
+                .foregroundStyle(themeManager.currentTheme.secondaryTextColor)
+            if let error = manager.lastErrorMessage {
+                Label("آخر خطأ: \(error)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(themeManager.currentTheme.highlightColor)
+            }
+        }
+        .font(.subheadline)
+        .accessibilityIdentifier("attachmentSyncStatus")
     }
 }

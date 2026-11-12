@@ -118,18 +118,24 @@ struct QLPreview: UIViewControllerRepresentable {
             target: context.coordinator,
             action: #selector(Coordinator.closeTapped)
         )
-        let nav = UINavigationController(rootViewController: controller)
-        return nav
+        context.coordinator.previewController = controller
+        return UINavigationController(rootViewController: controller)
     }
 
     func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {
         context.coordinator.dismissAction = dismiss
+        // تحديث العناوين وإعادة التحميل يمنع بقاء قائمة المنسّق القديمة.
+        if context.coordinator.urls != urls {
+            context.coordinator.urls = urls
+            context.coordinator.previewController?.reloadData()
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(urls: urls) }
 
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
-        let urls: [URL]
+        var urls: [URL]
+        weak var previewController: QLPreviewController?
         var dismissAction: DismissAction?
         init(urls: [URL]) { self.urls = urls }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { urls.count }

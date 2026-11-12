@@ -26,8 +26,13 @@ struct TaskDetailView: View {
     @State private var isPhotoPickerPresented: Bool = false
     @State private var isFileImporterPresented: Bool = false
     @State private var isDocumentScannerPresented: Bool = false
-    @State private var previewURLs: [URL] = []
-    @State private var showPreview: Bool = false
+    /// عنصر المعاينة — وجوده نفسه يعني أن لدينا ملفاً صالحاً للعرض.
+    private struct PreviewPayload: Identifiable {
+        let id: UUID
+        let urls: [URL]
+    }
+    @State private var previewPayload: PreviewPayload? = nil
+    @State private var downloadingAttachments: Set<UUID> = []
     @State private var attachmentStates: [UUID: AttachmentSyncState] = [:]
     @State private var attachmentOpenFailures: [UUID: String] = [:]
     @State private var renamingAttachment: TaskAttachment? = nil
@@ -100,6 +105,7 @@ struct TaskDetailView: View {
                     .padding()
             }
         }
+        .task { await store.syncNowIfEnabled() }
         .onReceive(store.attachmentSync.$states) { attachmentStates = $0 }
         .navigationTitle("تفاصيل المهمة")
         .navigationBarTitleDisplayMode(.inline)
@@ -135,7 +141,9 @@ struct TaskDetailView: View {
             }
         }
         #endif
-        .sheet(isPresented: $showPreview) { QLPreview(urls: previewURLs).ignoresSafeArea() }
+        .sheet(item: $previewPayload) { payload in
+            QLPreview(urls: payload.urls).ignoresSafeArea()
+        }
         .alert("تعديل اسم المرفق", isPresented: $showRenameAttachmentAlert) {
             TextField("اسم المرفق", text: $renameAttachmentText)
             Button("حفظ") {
@@ -151,6 +159,7 @@ struct TaskDetailView: View {
                             t.attachments[idx].fileURL = newURL
                             t.attachments[idx].fileName = newURL.lastPathComponent
                         }
+                        Task { await store.syncNowImmediately() }
                     }
                 }
                 renamingAttachment = nil
@@ -751,7 +760,7 @@ struct TaskDetailView: View {
     @ViewBuilder
     private func attachmentStatus(_ att: TaskAttachment) -> some View {
         let state = attachmentOpenFailures[att.id].map { AttachmentSyncState.failed($0) }
-            ?? store.attachmentSync.state(for: att)
+            ?? (downloadingAttachments.contains(att.id) ? .downloading : store.attachmentSync.state(for: att))
         if state != .available {
             HStack(spacing: 4) {
                 switch state {
@@ -764,12 +773,19 @@ struct TaskDetailView: View {
                 case .missing:
                     Label("اضغط للتنزيل", systemImage: "icloud.and.arrow.down")
                 case .failed(let reason):
-                    Label(reason, systemImage: "exclamationmark.triangle")
-                    Button("إعادة المحاولة") {
-                        attachmentOpenFailures[att.id] = nil
-                        Task { await store.attachmentSync.retry(att, at: store.resolvedURL(for: att)) }
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Label(reason, systemImage: "exclamationmark.triangle")
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.9)
+                            .multilineTextAlignment(.trailing)
+                        Button("إعادة المحاولة") {
+                            attachmentOpenFailures[att.id] = nil
+                            Task { await store.attachmentSync.retry(att, at: store.resolvedURL(for: att)) }
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(themeManager.currentTheme.accentColor)
+                        .accessibilityIdentifier("attachmentRetry-\(att.fileName)")
                     }
-                    .accessibilityIdentifier("attachmentRetry-\(att.fileName)")
                 case .available:
                     EmptyView()
                 }
@@ -777,25 +793,29 @@ struct TaskDetailView: View {
             .font(.caption)
             .foregroundStyle(themeManager.currentTheme.secondaryTextColor)
             .tint(themeManager.currentTheme.accentColor)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("attachmentState-\(att.fileName)")
         }
     }
 
     private func openAttachment(_ att: TaskAttachment) {
         attachmentOpenFailures[att.id] = nil
+        if store.isAttachmentAvailable(att) {
+            previewPayload = PreviewPayload(id: att.id, urls: [store.resolvedURL(for: att)])
+            return
+        }
+        guard downloadingAttachments.insert(att.id).inserted else { return }
         Task { @MainActor in
-            if !store.isAttachmentAvailable(att) {
-                guard await store.attachmentSync.ensureLocalFile(for: att, at: store.resolvedURL(for: att)) else {
-                    attachmentOpenFailures[att.id] = "تعذّر تنزيل المرفق؛ أعد المحاولة"
-                    return
-                }
+            defer { downloadingAttachments.remove(att.id) }
+            guard await store.attachmentSync.ensureLocalFile(for: att, at: store.resolvedURL(for: att)) else {
+                attachmentOpenFailures[att.id] = "تعذّر تنزيل المرفق؛ أعد المحاولة"
+                return
             }
             guard store.isAttachmentAvailable(att) else {
                 attachmentOpenFailures[att.id] = "ملف المرفق غير متاح؛ أعد المحاولة"
                 return
             }
-            previewURLs = [store.resolvedURL(for: att)]
-            showPreview = true
+            previewPayload = PreviewPayload(id: att.id, urls: [store.resolvedURL(for: att)])
         }
     }
 
@@ -821,6 +841,7 @@ struct TaskDetailView: View {
             updateTask { t in
                 t.attachments.append(TaskAttachment(fileName: destURL.lastPathComponent, fileURL: destURL, kind: kind))
             }
+            Task { await store.syncNowImmediately() }
         } catch {
             #if DEBUG
             NSLog("⚠️ فشل إضافة مرفق: \(error.localizedDescription)")
@@ -840,6 +861,7 @@ struct TaskDetailView: View {
             updateTask { t in
                 t.attachments.append(TaskAttachment(fileName: url.lastPathComponent, fileURL: url, kind: .image))
             }
+            Task { await store.syncNowImmediately() }
         } catch {
             #if DEBUG
             NSLog("⚠️ فشل حفظ صورة: \(error.localizedDescription)")
@@ -942,6 +964,7 @@ struct TaskDetailView: View {
             t.attachments.removeAll { $0.id == att.id }
         }
         if store.deleteAttachmentFilesOnRemove { store.removeAttachmentFile(at: store.resolvedURL(for: att)) }
+        Task { await store.syncNowImmediately() }
     }
 
     private func kindForFileExtension(_ ext: String) -> AttachmentKind {
